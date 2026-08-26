@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans;
+  }
+}
+
+/* UVU theme animations and pulse effects */
+@keyframes uvuLockPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
+  }
+}
+
+@keyframes uvuGreenFlash {
+  0% {
+    background-color: rgba(39, 93, 56, 0.3);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes strikeThrough {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes redCircleGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7), inset 0 0 12px rgba(239, 68, 68, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.3), inset 0 0 16px rgba(239, 68, 68, 0.35);
+  }
+}
+
+.animate-lock-pulse {
+  animation: uvuLockPulse 1.8s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+.animate-commit-flash {
+  animation: uvuGreenFlash 1.2s ease-out;
+}
+
+.animate-strike-through {
+  transform-origin: left;
+  animation: strikeThrough 0.4s ease-out forwards;
+}
+
+.animate-red-circle {
+  animation: redCircleGlow 1.5s infinite ease-in-out;
+}
+
+/* Smooth custom scrollbars for light mode */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.6);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.8);
+}
