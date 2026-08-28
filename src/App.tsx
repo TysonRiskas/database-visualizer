@@ -33,221 +33,330 @@ const INITIAL_ROBOTS: WorkerRobotState[] = [
   },
 ];
 
+interface RoomEnvironmentState {
+  databaseState: DatabaseState;
+  activeLocks: LockEntry[];
+  waitingLocks: LockWaitQueueEntry[];
+  walRecords: WalRecord[];
+  extractedTrayRows: RowData[];
+  queryResult?: QueryResult;
+  workerRobots: WorkerRobotState[];
+  simulationSteps: SimulationStep[];
+  currentStepIndex: number;
+  isPlaying: boolean;
+  speed: number;
+}
+
 export const App: React.FC = () => {
   const engineRef = useRef<DatabaseEngine>(new DatabaseEngine());
 
   // View Mode: Welcome Overview vs. Engine Room Visualizer vs. Build Your Own Database
   const [viewMode, setViewMode] = useState<'welcome' | 'engine_room' | 'database_builder'>('welcome');
 
-  // Reactive DB States (Engine Room has Tutoring DB; Builder starts completely blank)
-  const [databaseState, setDatabaseState] = useState<DatabaseState>(() =>
-    engineRef.current.getState()
-  );
-  const [builderDatabaseState, setBuilderDatabaseState] = useState<DatabaseState>({});
-
-  const [activeLocks, setActiveLocks] = useState<LockEntry[]>([]);
-  const [waitingLocks, setWaitingLocks] = useState<LockWaitQueueEntry[]>([]);
-  const [walRecords, setWalRecords] = useState<WalRecord[]>([]);
-  const [extractedTrayRows, setExtractedTrayRows] = useState<RowData[]>([]);
-  const [queryResult, setQueryResult] = useState<QueryResult | undefined>();
-  const [workerRobots, setWorkerRobots] = useState<WorkerRobotState[]>(INITIAL_ROBOTS);
-
-  // Active ACID Concept
-  const [activeAcidProperty, setActiveAcidProperty] = useState<AcidProperty | undefined>();
-
-  // Playback States (Slower, Deliberate Timing)
-  const [simulationSteps, setSimulationSteps] = useState<SimulationStep[]>([]);
-  const [currentStepIndex, setCurrentStepIndex] = useState<number>(-1);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [speed, setSpeed] = useState<number>(0.5);
-
   // Theory Modal
   const [isEducationalModalOpen, setIsEducationalModalOpen] = useState<boolean>(false);
 
-  const isSimulating = simulationSteps.length > 0 && currentStepIndex < simulationSteps.length - 1;
+  // 1. ENGINE ROOM ENVIRONMENT (Initialized with UVU Tutoring DB: Students, Tutors, Sessions)
+  const [engineEnv, setEngineEnv] = useState<RoomEnvironmentState>(() => ({
+    databaseState: engineRef.current.getState(),
+    activeLocks: [],
+    waitingLocks: [],
+    walRecords: [],
+    extractedTrayRows: [],
+    queryResult: undefined,
+    workerRobots: INITIAL_ROBOTS,
+    simulationSteps: [],
+    currentStepIndex: -1,
+    isPlaying: false,
+    speed: 0.5,
+  }));
 
-  // Apply atomic step snapshot
-  const applyStep = (step: SimulationStep) => {
-    if (step.tableStateSnapshot) {
-      if (viewMode === 'database_builder') {
-        setBuilderDatabaseState(step.tableStateSnapshot);
-      } else {
-        setDatabaseState(step.tableStateSnapshot);
-        engineRef.current.setState(step.tableStateSnapshot);
-      }
-    }
-    if (step.activeLocksSnapshot) {
-      setActiveLocks(step.activeLocksSnapshot);
-    }
-    if (step.waitingLocksSnapshot) {
-      setWaitingLocks(step.waitingLocksSnapshot);
-    }
-    if (step.workerStatesSnapshot) {
-      setWorkerRobots(step.workerStatesSnapshot);
-    }
-    if (step.extractedTrayRows !== undefined) {
-      setExtractedTrayRows(step.extractedTrayRows);
-    }
-    if (step.queryResultSnapshot) {
-      setQueryResult(step.queryResultSnapshot);
-    }
+  // Active ACID Concept for Engine Room
+  const [activeAcidProperty, setActiveAcidProperty] = useState<AcidProperty | undefined>();
+
+  // 2. BUILDER ROOM ENVIRONMENT (Initialized completely blank: {})
+  const [builderEnv, setBuilderEnv] = useState<RoomEnvironmentState>(() => ({
+    databaseState: {},
+    activeLocks: [],
+    waitingLocks: [],
+    walRecords: [],
+    extractedTrayRows: [],
+    queryResult: undefined,
+    workerRobots: INITIAL_ROBOTS,
+    simulationSteps: [],
+    currentStepIndex: -1,
+    isPlaying: false,
+    speed: 0.5,
+  }));
+
+  // Helper to apply step snapshot to Engine Environment
+  const applyEngineStep = (step: SimulationStep, nextIndex: number, totalCount: number) => {
+    setEngineEnv((prev) => {
+      const next: RoomEnvironmentState = {
+        ...prev,
+        currentStepIndex: nextIndex,
+        isPlaying: nextIndex < totalCount - 1,
+      };
+      if (step.tableStateSnapshot) next.databaseState = step.tableStateSnapshot;
+      if (step.activeLocksSnapshot) next.activeLocks = step.activeLocksSnapshot;
+      if (step.waitingLocksSnapshot) next.waitingLocks = step.waitingLocksSnapshot;
+      if (step.workerStatesSnapshot) next.workerRobots = step.workerStatesSnapshot;
+      if (step.extractedTrayRows !== undefined) next.extractedTrayRows = step.extractedTrayRows;
+      if (step.queryResultSnapshot) next.queryResult = step.queryResultSnapshot;
+      return next;
+    });
   };
 
-  // Timer loop for slower, deliberate playback
+  // Helper to apply step snapshot to Builder Environment
+  const applyBuilderStep = (step: SimulationStep, nextIndex: number, totalCount: number) => {
+    setBuilderEnv((prev) => {
+      const next: RoomEnvironmentState = {
+        ...prev,
+        currentStepIndex: nextIndex,
+        isPlaying: nextIndex < totalCount - 1,
+      };
+      if (step.tableStateSnapshot) next.databaseState = step.tableStateSnapshot;
+      if (step.activeLocksSnapshot) next.activeLocks = step.activeLocksSnapshot;
+      if (step.waitingLocksSnapshot) next.waitingLocks = step.waitingLocksSnapshot;
+      if (step.workerStatesSnapshot) next.workerRobots = step.workerStatesSnapshot;
+      if (step.extractedTrayRows !== undefined) next.extractedTrayRows = step.extractedTrayRows;
+      if (step.queryResultSnapshot) next.queryResult = step.queryResultSnapshot;
+      return next;
+    });
+  };
+
+  // Engine Room Timer Loop
   useEffect(() => {
     let timer: any;
-
     if (
-      isPlaying &&
-      simulationSteps.length > 0 &&
-      currentStepIndex >= 0 &&
-      currentStepIndex < simulationSteps.length - 1
+      engineEnv.isPlaying &&
+      engineEnv.simulationSteps.length > 0 &&
+      engineEnv.currentStepIndex >= 0 &&
+      engineEnv.currentStepIndex < engineEnv.simulationSteps.length - 1
     ) {
-      const baseDelay = 2000;
-      const delay = Math.round(baseDelay / speed);
-
+      const delay = Math.round(2000 / engineEnv.speed);
       timer = setTimeout(() => {
-        const nextIndex = currentStepIndex + 1;
-        setCurrentStepIndex(nextIndex);
-        applyStep(simulationSteps[nextIndex]);
-
-        if (nextIndex >= simulationSteps.length - 1) {
-          setIsPlaying(false);
-        }
+        const nextIndex = engineEnv.currentStepIndex + 1;
+        applyEngineStep(engineEnv.simulationSteps[nextIndex], nextIndex, engineEnv.simulationSteps.length);
       }, delay);
     }
-
     return () => clearTimeout(timer);
-  }, [isPlaying, simulationSteps, currentStepIndex, speed, viewMode]);
+  }, [engineEnv.isPlaying, engineEnv.simulationSteps, engineEnv.currentStepIndex, engineEnv.speed]);
 
-  // Start new simulation
-  const startSimulation = (steps: SimulationStep[]) => {
+  // Builder Room Timer Loop
+  useEffect(() => {
+    let timer: any;
+    if (
+      builderEnv.isPlaying &&
+      builderEnv.simulationSteps.length > 0 &&
+      builderEnv.currentStepIndex >= 0 &&
+      builderEnv.currentStepIndex < builderEnv.simulationSteps.length - 1
+    ) {
+      const delay = Math.round(2000 / builderEnv.speed);
+      timer = setTimeout(() => {
+        const nextIndex = builderEnv.currentStepIndex + 1;
+        applyBuilderStep(builderEnv.simulationSteps[nextIndex], nextIndex, builderEnv.simulationSteps.length);
+      }, delay);
+    }
+    return () => clearTimeout(timer);
+  }, [builderEnv.isPlaying, builderEnv.simulationSteps, builderEnv.currentStepIndex, builderEnv.speed]);
+
+  // ===================== ENGINE ROOM ACTIONS =====================
+  const startEngineSimulation = (steps: SimulationStep[]) => {
     if (steps.length === 0) return;
-    setSimulationSteps(steps);
-    setCurrentStepIndex(0);
-    applyStep(steps[0]);
-    setIsPlaying(true);
+    const firstStep = steps[0];
+    setEngineEnv((prev) => {
+      const next: RoomEnvironmentState = {
+        ...prev,
+        simulationSteps: steps,
+        currentStepIndex: 0,
+        isPlaying: steps.length > 1,
+      };
+      if (firstStep.tableStateSnapshot) next.databaseState = firstStep.tableStateSnapshot;
+      if (firstStep.activeLocksSnapshot) next.activeLocks = firstStep.activeLocksSnapshot;
+      if (firstStep.waitingLocksSnapshot) next.waitingLocks = firstStep.waitingLocksSnapshot;
+      if (firstStep.workerStatesSnapshot) next.workerRobots = firstStep.workerStatesSnapshot;
+      if (firstStep.extractedTrayRows !== undefined) next.extractedTrayRows = firstStep.extractedTrayRows;
+      if (firstStep.queryResultSnapshot) next.queryResult = firstStep.queryResultSnapshot;
+      return next;
+    });
   };
 
-  // User Actions
   const handleBookSession = (data: any) => {
     setActiveAcidProperty(undefined);
-    const { steps } = SimulationGenerator.generateTpsInsertSteps(databaseState, data);
-    startSimulation(steps);
+    const { steps } = SimulationGenerator.generateTpsInsertSteps(engineEnv.databaseState, data);
+    startEngineSimulation(steps);
   };
 
   const handleFireConcurrent = () => {
     setActiveAcidProperty('I');
-    const { steps } = SimulationGenerator.generateConcurrentBookingsSteps(databaseState);
-    startSimulation(steps);
+    const { steps } = SimulationGenerator.generateConcurrentBookingsSteps(engineEnv.databaseState);
+    startEngineSimulation(steps);
   };
 
   const handleRunSql = (sql: string) => {
     setActiveAcidProperty(undefined);
-    const { steps } = SimulationGenerator.generateSqlQuerySteps(databaseState, sql);
-    startSimulation(steps);
+    const { steps } = SimulationGenerator.generateSqlQuerySteps(engineEnv.databaseState, sql);
+    startEngineSimulation(steps);
   };
 
-  const handleRunDdl = (ddlScript: string) => {
-    setActiveAcidProperty(undefined);
-    const cleaned = ddlScript.trim().toUpperCase();
-    if (cleaned.startsWith('SELECT')) {
-      const { steps } = SimulationGenerator.generateSqlQuerySteps(builderDatabaseState, ddlScript);
-      startSimulation(steps);
-    } else {
-      const { steps } = SimulationGenerator.generateBuildDatabaseSteps(builderDatabaseState, ddlScript);
-      startSimulation(steps);
-    }
-  };
-
-  // ACID Demonstrations Trigger
   const handleRunAcidDemo = (property: AcidProperty) => {
     setActiveAcidProperty(property);
     if (property === 'A') {
-      const { steps } = SimulationGenerator.generateAtomicityRollbackSteps(databaseState);
-      startSimulation(steps);
+      const { steps } = SimulationGenerator.generateAtomicityRollbackSteps(engineEnv.databaseState);
+      startEngineSimulation(steps);
     } else if (property === 'C') {
-      const { steps } = SimulationGenerator.generateConsistencyViolationSteps(databaseState);
-      startSimulation(steps);
+      const { steps } = SimulationGenerator.generateConsistencyViolationSteps(engineEnv.databaseState);
+      startEngineSimulation(steps);
     } else if (property === 'I') {
-      const { steps } = SimulationGenerator.generateConcurrentBookingsSteps(databaseState);
-      startSimulation(steps);
+      const { steps } = SimulationGenerator.generateConcurrentBookingsSteps(engineEnv.databaseState);
+      startEngineSimulation(steps);
     } else if (property === 'D') {
-      const { steps } = SimulationGenerator.generateDurabilityWalSteps(databaseState);
-      startSimulation(steps);
+      const { steps } = SimulationGenerator.generateDurabilityWalSteps(engineEnv.databaseState);
+      startEngineSimulation(steps);
     }
   };
 
-  const handleNextStep = () => {
-    if (currentStepIndex < simulationSteps.length - 1) {
-      const nextIndex = currentStepIndex + 1;
-      setCurrentStepIndex(nextIndex);
-      applyStep(simulationSteps[nextIndex]);
-
-      if (nextIndex >= simulationSteps.length - 1) {
-        setIsPlaying(false);
-      }
+  const handleEngineNextStep = () => {
+    if (engineEnv.currentStepIndex < engineEnv.simulationSteps.length - 1) {
+      const nextIndex = engineEnv.currentStepIndex + 1;
+      applyEngineStep(engineEnv.simulationSteps[nextIndex], nextIndex, engineEnv.simulationSteps.length);
     }
   };
 
-  const handleTogglePlayPause = () => {
-    setIsPlaying((prev) => !prev);
+  const handleEngineTogglePlayPause = () => {
+    setEngineEnv((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
   };
 
-  const handleResetSimulation = () => {
-    setSimulationSteps([]);
-    setCurrentStepIndex(-1);
-    setIsPlaying(false);
-    setActiveLocks([]);
-    setWaitingLocks([]);
-    setExtractedTrayRows([]);
-    setWorkerRobots(INITIAL_ROBOTS);
+  const handleEngineResetSimulation = () => {
+    setEngineEnv((prev) => ({
+      ...prev,
+      simulationSteps: [],
+      currentStepIndex: -1,
+      isPlaying: false,
+      activeLocks: [],
+      waitingLocks: [],
+      extractedTrayRows: [],
+      workerRobots: INITIAL_ROBOTS,
+    }));
     setActiveAcidProperty(undefined);
   };
 
-  const handleResetDatabase = () => {
+  const handleEngineResetDatabase = () => {
     engineRef.current.reset();
-    setDatabaseState(engineRef.current.getState());
-    setActiveLocks([]);
-    setWaitingLocks([]);
-    setWalRecords([]);
-    setExtractedTrayRows([]);
-    setQueryResult(undefined);
-    setWorkerRobots(INITIAL_ROBOTS);
-    setSimulationSteps([]);
-    setCurrentStepIndex(-1);
-    setIsPlaying(false);
+    setEngineEnv({
+      databaseState: engineRef.current.getState(),
+      activeLocks: [],
+      waitingLocks: [],
+      walRecords: [],
+      extractedTrayRows: [],
+      queryResult: undefined,
+      workerRobots: INITIAL_ROBOTS,
+      simulationSteps: [],
+      currentStepIndex: -1,
+      isPlaying: false,
+      speed: 0.5,
+    });
     setActiveAcidProperty(undefined);
   };
 
-  const handleResetBuilderDatabase = () => {
-    setBuilderDatabaseState({});
-    setActiveLocks([]);
-    setWaitingLocks([]);
-    setWalRecords([]);
-    setExtractedTrayRows([]);
-    setQueryResult(undefined);
-    setWorkerRobots(INITIAL_ROBOTS);
-    setSimulationSteps([]);
-    setCurrentStepIndex(-1);
-    setIsPlaying(false);
+  // ===================== BUILDER ROOM ACTIONS =====================
+  const startBuilderSimulation = (steps: SimulationStep[]) => {
+    if (steps.length === 0) return;
+    const firstStep = steps[0];
+    setBuilderEnv((prev) => {
+      const next: RoomEnvironmentState = {
+        ...prev,
+        simulationSteps: steps,
+        currentStepIndex: 0,
+        isPlaying: steps.length > 1,
+      };
+      if (firstStep.tableStateSnapshot) next.databaseState = firstStep.tableStateSnapshot;
+      if (firstStep.activeLocksSnapshot) next.activeLocks = firstStep.activeLocksSnapshot;
+      if (firstStep.waitingLocksSnapshot) next.waitingLocks = firstStep.waitingLocksSnapshot;
+      if (firstStep.workerStatesSnapshot) next.workerRobots = firstStep.workerStatesSnapshot;
+      if (firstStep.extractedTrayRows !== undefined) next.extractedTrayRows = firstStep.extractedTrayRows;
+      if (firstStep.queryResultSnapshot) next.queryResult = firstStep.queryResultSnapshot;
+      return next;
+    });
   };
 
-  const currentStep =
-    currentStepIndex >= 0 && currentStepIndex < simulationSteps.length
-      ? simulationSteps[currentStepIndex]
+  const handleRunDdl = (ddlScript: string) => {
+    const cleaned = ddlScript.trim().toUpperCase();
+    if (cleaned.startsWith('SELECT')) {
+      const { steps } = SimulationGenerator.generateSqlQuerySteps(builderEnv.databaseState, ddlScript);
+      startBuilderSimulation(steps);
+    } else {
+      const { steps } = SimulationGenerator.generateBuildDatabaseSteps(builderEnv.databaseState, ddlScript);
+      startBuilderSimulation(steps);
+    }
+  };
+
+  const handleBuilderNextStep = () => {
+    if (builderEnv.currentStepIndex < builderEnv.simulationSteps.length - 1) {
+      const nextIndex = builderEnv.currentStepIndex + 1;
+      applyBuilderStep(builderEnv.simulationSteps[nextIndex], nextIndex, builderEnv.simulationSteps.length);
+    }
+  };
+
+  const handleBuilderTogglePlayPause = () => {
+    setBuilderEnv((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+  };
+
+  const handleBuilderResetSimulation = () => {
+    setBuilderEnv((prev) => ({
+      ...prev,
+      simulationSteps: [],
+      currentStepIndex: -1,
+      isPlaying: false,
+      activeLocks: [],
+      waitingLocks: [],
+      extractedTrayRows: [],
+      workerRobots: INITIAL_ROBOTS,
+    }));
+  };
+
+  const handleBuilderResetDatabase = () => {
+    setBuilderEnv({
+      databaseState: {},
+      activeLocks: [],
+      waitingLocks: [],
+      walRecords: [],
+      extractedTrayRows: [],
+      queryResult: undefined,
+      workerRobots: INITIAL_ROBOTS,
+      simulationSteps: [],
+      currentStepIndex: -1,
+      isPlaying: false,
+      speed: 0.5,
+    });
+  };
+
+  const isEngineSimulating =
+    engineEnv.simulationSteps.length > 0 && engineEnv.currentStepIndex < engineEnv.simulationSteps.length - 1;
+  const isBuilderSimulating =
+    builderEnv.simulationSteps.length > 0 && builderEnv.currentStepIndex < builderEnv.simulationSteps.length - 1;
+
+  const currentEngineStep =
+    engineEnv.currentStepIndex >= 0 && engineEnv.currentStepIndex < engineEnv.simulationSteps.length
+      ? engineEnv.simulationSteps[engineEnv.currentStepIndex]
+      : undefined;
+
+  const currentBuilderStep =
+    builderEnv.currentStepIndex >= 0 && builderEnv.currentStepIndex < builderEnv.simulationSteps.length
+      ? builderEnv.simulationSteps[builderEnv.currentStepIndex]
       : undefined;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-[#275D38] selection:text-white">
       {/* 1. TOP BAR: UVU Header Controls & Action Modals */}
       <TopControlsBar
-        databaseState={databaseState}
+        databaseState={engineEnv.databaseState}
         onBookSession={handleBookSession}
         onFireConcurrent={handleFireConcurrent}
         onRunSql={handleRunSql}
         onOpenHelp={() => setIsEducationalModalOpen(true)}
-        isSimulating={isSimulating}
+        isSimulating={viewMode === 'database_builder' ? isBuilderSimulating : isEngineSimulating}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
       />
@@ -261,50 +370,50 @@ export const App: React.FC = () => {
           />
         ) : viewMode === 'database_builder' ? (
           <DatabaseBuilderPage
-            databaseState={builderDatabaseState}
+            databaseState={builderEnv.databaseState}
             onRunDdl={handleRunDdl}
-            isSimulating={isSimulating}
-            activeLocks={activeLocks}
-            currentStep={currentStep}
-            workerRobots={workerRobots}
-            extractedTrayRows={extractedTrayRows}
-            speed={speed}
-            setSpeed={setSpeed}
-            isPlaying={isPlaying}
-            onTogglePlayPause={handleTogglePlayPause}
-            onNextStep={handleNextStep}
-            onResetSimulation={handleResetSimulation}
-            onResetDatabase={handleResetBuilderDatabase}
-            currentStepIndex={currentStepIndex}
-            totalStepsCount={simulationSteps.length}
+            isSimulating={isBuilderSimulating}
+            activeLocks={builderEnv.activeLocks}
+            currentStep={currentBuilderStep}
+            workerRobots={builderEnv.workerRobots}
+            extractedTrayRows={builderEnv.extractedTrayRows}
+            speed={builderEnv.speed}
+            setSpeed={(s) => setBuilderEnv((prev) => ({ ...prev, speed: s }))}
+            isPlaying={builderEnv.isPlaying}
+            onTogglePlayPause={handleBuilderTogglePlayPause}
+            onNextStep={handleBuilderNextStep}
+            onResetSimulation={handleBuilderResetSimulation}
+            onResetDatabase={handleBuilderResetDatabase}
+            currentStepIndex={builderEnv.currentStepIndex}
+            totalStepsCount={builderEnv.simulationSteps.length}
             onOpenHelp={() => setIsEducationalModalOpen(true)}
           />
         ) : (
           <>
-            {/* Sticky Playback Controller Bar */}
+            {/* Sticky Playback Controller Bar for Engine Room */}
             <PlaybackController
-              speed={speed}
-              setSpeed={setSpeed}
-              isPlaying={isPlaying}
-              onTogglePlayPause={handleTogglePlayPause}
-              onNextStep={handleNextStep}
-              onResetSimulation={handleResetSimulation}
-              onResetDatabase={handleResetDatabase}
-              currentStepIndex={currentStepIndex}
-              totalStepsCount={simulationSteps.length}
-              isSimulating={isSimulating}
+              speed={engineEnv.speed}
+              setSpeed={(s) => setEngineEnv((prev) => ({ ...prev, speed: s }))}
+              isPlaying={engineEnv.isPlaying}
+              onTogglePlayPause={handleEngineTogglePlayPause}
+              onNextStep={handleEngineNextStep}
+              onResetSimulation={handleEngineResetSimulation}
+              onResetDatabase={handleEngineResetDatabase}
+              currentStepIndex={engineEnv.currentStepIndex}
+              totalStepsCount={engineEnv.simulationSteps.length}
+              isSimulating={isEngineSimulating}
             />
 
             {/* 2. CENTER STAGE + ACID SIDEBAR LAYOUT */}
             <div className="flex flex-col xl:flex-row items-start gap-6 w-full">
-              {/* Main Stage Canvas */}
+              {/* Main Stage Canvas for Engine Room */}
               <div className="flex-1 w-full min-w-0">
                 <StageCanvas
-                  databaseState={databaseState}
-                  activeLocks={activeLocks}
-                  currentStep={currentStep}
-                  workerRobots={workerRobots}
-                  extractedTrayRows={extractedTrayRows}
+                  databaseState={engineEnv.databaseState}
+                  activeLocks={engineEnv.activeLocks}
+                  currentStep={currentEngineStep}
+                  workerRobots={engineEnv.workerRobots}
+                  extractedTrayRows={engineEnv.extractedTrayRows}
                 />
               </div>
 
@@ -312,7 +421,7 @@ export const App: React.FC = () => {
               <AcidSidebar
                 activeAcidProperty={activeAcidProperty}
                 onRunAcidDemo={handleRunAcidDemo}
-                isPlaying={isPlaying}
+                isPlaying={engineEnv.isPlaying}
               />
             </div>
           </>

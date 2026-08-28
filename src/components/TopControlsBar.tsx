@@ -14,6 +14,8 @@ import {
   Code2,
   Link,
   Home,
+  Layers,
+  Bot,
 } from 'lucide-react';
 
 interface TopControlsBarProps {
@@ -178,8 +180,8 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
             </div>
           )}
 
-          {/* Action Buttons: Only visible once inside Engine Room or Database Builder */}
-          {viewMode !== 'welcome' && (
+          {/* Action Buttons: Different for Engine Room vs. Database Builder */}
+          {viewMode === 'engine_room' && (
             <div className="flex items-center gap-2 flex-wrap">
               {/* Quick Multi-Table Sign-up + Book */}
               <button
@@ -224,6 +226,24 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
                 <Terminal className="w-3.5 h-3.5 text-slate-500" />
                 <span>Custom SQL</span>
               </button>
+
+              {/* Theory Guide */}
+              <button
+                onClick={onOpenHelp}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium border border-slate-300 transition"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-slate-500" />
+                <span>Theory</span>
+              </button>
+            </div>
+          )}
+
+          {viewMode === 'database_builder' && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 text-xs font-mono font-bold shadow-xs">
+                <Layers className="w-3.5 h-3.5 text-purple-600" />
+                <span>Builder Studio (Isolated Canvas)</span>
+              </div>
 
               {/* Theory Guide */}
               <button
