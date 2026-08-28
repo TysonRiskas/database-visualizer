@@ -83,6 +83,41 @@ export class SqlParser {
     return { statements, hasErrors };
   }
 
+  /**
+   * Splits SQL comma-separated arguments while respecting nested parentheses and quotes.
+   */
+  public static splitSqlArguments(text: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+    let inSingleQuote = false;
+    let inDoubleQuote = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      if (char === "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+        current += char;
+      } else if (char === '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+        current += char;
+      } else if (char === '(' && !inSingleQuote && !inDoubleQuote) {
+        parenDepth++;
+        current += char;
+      } else if (char === ')' && !inSingleQuote && !inDoubleQuote) {
+        parenDepth = Math.max(0, parenDepth - 1);
+        current += char;
+      } else if (char === ',' && parenDepth === 0 && !inSingleQuote && !inDoubleQuote) {
+        if (current.trim()) result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) result.push(current.trim());
+    return result;
+  }
+
   public static parseCreateTable(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
     try {
       const match = sql.match(/^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)\s*\(([\s\S]+)\)$/i);
@@ -107,7 +142,7 @@ export class SqlParser {
       }[] = [];
       let primaryKey = '';
 
-      const lines = body.split(',').map((l) => l.trim()).filter(Boolean);
+      const lines = SqlParser.splitSqlArguments(body).map((l) => l.trim()).filter(Boolean);
 
       for (const line of lines) {
         // Table constraints
@@ -122,7 +157,8 @@ export class SqlParser {
         const fkConstraintMatch = line.match(/^FOREIGN\s+KEY\s*\(([a-zA-Z0-9_]+)\)\s+REFERENCES\s+([a-zA-Z0-9_]+)\s*\(([a-zA-Z0-9_]+)\)/i);
         if (fkConstraintMatch) {
           const colName = fkConstraintMatch[1].trim();
-          const targetTable = SqlParser.normalizeTableName(fkConstraintMatch[2].trim());
+          const rawTarget = fkConstraintMatch[2].trim();
+          const targetTable = SqlParser.normalizeTableName(rawTarget);
           const targetCol = fkConstraintMatch[3].trim();
           const targetColDef = colDefs.find((c) => c.name.toLowerCase() === colName.toLowerCase());
           if (targetColDef) {
@@ -143,12 +179,13 @@ export class SqlParser {
         const colParts = line.split(/\s+/);
         if (colParts.length < 2) continue;
 
-        const colName = colParts[0].trim();
+        const colName = colParts[0].trim().replace(/^[`"']|[`"']$/g, '');
         const rawType = colParts[1].trim().toUpperCase();
         let dataType: DataType = 'TEXT';
         if (rawType.includes('INT')) dataType = 'INTEGER';
         else if (rawType.includes('DATE') || rawType.includes('TIME')) dataType = 'DATE';
-        else if (rawType.includes('VARCHAR')) dataType = 'VARCHAR';
+        else if (rawType.includes('VARCHAR') || rawType.includes('CHAR')) dataType = 'VARCHAR';
+        else if (rawType.includes('NUMERIC') || rawType.includes('DECIMAL') || rawType.includes('REAL') || rawType.includes('FLOAT')) dataType = 'INTEGER';
 
         const isPk = /PRIMARY\s+KEY/i.test(line);
         const isFk = /REFERENCES/i.test(line);
@@ -158,7 +195,7 @@ export class SqlParser {
         let cardinality: RelationshipCardinality = '1:M';
 
         if (isFk) {
-          const refMatch = line.match(/REFERENCES\s+([a-zA-Z0-9_]+)\s*\(([a-zA-Z0-9_]+)\)/i);
+          const refMatch = line.match(/REFERENCES\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_]+)\s*\)/i);
           if (refMatch) {
             const tgtTable = SqlParser.normalizeTableName(refMatch[1].trim());
             const tgtCol = refMatch[2].trim();
@@ -279,7 +316,6 @@ export class SqlParser {
       }
 
       // Parse primary table and all JOIN clauses
-      // Split on (?:INNER\s+|LEFT\s+|RIGHT\s+)?JOIN
       const joinTokens = fromAndJoinsPart.split(/\s+(?:INNER\s+|LEFT\s+|RIGHT\s+)?JOIN\s+/i);
       const rawPrimaryTable = joinTokens[0].trim();
       const primaryTable = SqlParser.normalizeTableName(rawPrimaryTable);
@@ -303,14 +339,17 @@ export class SqlParser {
         }
       }
 
-      const columns = selectPart === '*' ? ['*'] : selectPart.split(',').map((c) => c.trim());
+      const isAllCols = selectPart.replace(/\s+/g, '') === '*' || selectPart.trim() === '*';
+      const columns = isAllCols
+        ? ['*']
+        : SqlParser.splitSqlArguments(selectPart).map((c) => c.trim());
 
       let whereClause: SqlAst['whereClause'] | undefined;
       if (afterWherePart) {
         const andParts = afterWherePart.split(/\s+AND\s+/i);
         const firstCond = SqlParser.parseCondition(andParts[0]);
         if (firstCond) {
-          whereClause = {
+          const mainWhere: NonNullable<SqlAst['whereClause']> = {
             column: firstCond.col,
             operator: firstCond.op,
             value: firstCond.val,
@@ -318,13 +357,14 @@ export class SqlParser {
           if (andParts.length > 1) {
             const secondCond = SqlParser.parseCondition(andParts[1]);
             if (secondCond) {
-              whereClause.andWhere = {
+              mainWhere.andWhere = {
                 column: secondCond.col,
                 operator: secondCond.op,
                 value: secondCond.val,
               };
             }
           }
+          whereClause = mainWhere;
         }
       }
 
@@ -357,64 +397,68 @@ export class SqlParser {
       return {
         ast: { type: 'SELECT', rawQuery: sql, table: '', columns: [] },
         plan: [],
-        error: `Parse error: ${e.message}`,
+        error: `Parse error in SELECT: ${e.message}`,
       };
     }
   }
 
-  private static parseCondition(condStr: string): { col: string; op: any; val: any } | null {
-    const trimmed = condStr.trim();
-    const match = trimmed.match(/^([a-zA-Z0-9_.]+)\s*(=|!=|>=|<=|>|<|LIKE)\s*(.+)$/i);
+  private static parseCondition(condStr: string): { col: string; op: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE'; val: any } | null {
+    const match = condStr.match(/([a-zA-Z0-9_.]+)\s*(=|!=|<>|<=|>=|<|>|LIKE)\s*(.+)/i);
     if (!match) return null;
 
     const col = match[1].trim();
-    const op = match[2].toUpperCase() as any;
-    let rawVal = match[3].trim();
+    let op = match[2].trim().toUpperCase();
+    if (op === '<>') op = '!=';
+    let val: any = match[3].trim();
 
-    // Strip quotes if string
-    let val: any = rawVal;
-    if ((rawVal.startsWith("'") && rawVal.endsWith("'")) || (rawVal.startsWith('"') && rawVal.endsWith('"'))) {
-      val = rawVal.slice(1, -1);
-    } else if (!isNaN(Number(rawVal))) {
-      val = Number(rawVal);
+    // Strip single or double quotes for strings
+    if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
+      val = val.slice(1, -1);
+    } else if (!isNaN(Number(val)) && val !== '') {
+      val = Number(val);
     }
 
-    return { col, op, val };
+    return { col, op: op as any, val };
   }
 
   private static parseInsert(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
     try {
-      // INSERT INTO Table (col1, col2) VALUES (val1, val2)
-      const match = sql.match(/INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\((.+?)\)\s*VALUES\s*\((.+?)\)/i);
-      if (!match) {
+      // 1. With columns: INSERT INTO table (col1, col2) VALUES (val1, val2)
+      // 2. Without columns: INSERT INTO table VALUES (val1, val2)
+      const withColsMatch = sql.match(/INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\(([\s\S]+?)\)\s*VALUES\s*\(([\s\S]+?)\)/i);
+      const withoutColsMatch = !withColsMatch
+        ? sql.match(/INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*VALUES\s*\(([\s\S]+?)\)/i)
+        : null;
+
+      if (!withColsMatch && !withoutColsMatch) {
         return {
           ast: { type: 'INSERT', rawQuery: sql, table: '', columns: [] },
           plan: [],
-          error: 'Syntax error in INSERT statement. Expected format: INSERT INTO <table> (<col1>, <col2>) VALUES (<val1>, <val2>)',
+          error: 'Syntax error in INSERT statement. Expected format: INSERT INTO <table> [(<col1>, <col2>)] VALUES (<val1>, <val2>)',
         };
       }
 
-      const table = SqlParser.normalizeTableName(match[1].trim());
-      const cols = match[2].split(',').map((c) => c.trim());
-      const rawVals = match[3].split(',').map((v) => v.trim());
+      const rawTable = withColsMatch ? withColsMatch[1].trim() : withoutColsMatch![1].trim();
+      const table = SqlParser.normalizeTableName(rawTable);
 
-      if (cols.length !== rawVals.length) {
-        return {
-          ast: { type: 'INSERT', rawQuery: sql, table, columns: cols },
-          plan: [],
-          error: `Column count (${cols.length}) does not match value count (${rawVals.length}).`,
-        };
-      }
+      const cols = withColsMatch
+        ? SqlParser.splitSqlArguments(withColsMatch[2]).map((c) => c.trim().replace(/^[`"']|[`"']$/g, ''))
+        : [];
+
+      const rawVals = SqlParser.splitSqlArguments(
+        withColsMatch ? withColsMatch[3] : withoutColsMatch![2]
+      );
 
       const insertValues: Record<string, any> = {};
-      cols.forEach((col, idx) => {
-        let v: any = rawVals[idx];
+      rawVals.forEach((valStr, idx) => {
+        let v: any = valStr.trim();
         if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
           v = v.slice(1, -1);
-        } else if (!isNaN(Number(v))) {
+        } else if (!isNaN(Number(v)) && v !== '') {
           v = Number(v);
         }
-        insertValues[col] = v;
+        const colName = cols[idx] || `col_${idx + 1}`;
+        insertValues[colName] = v;
       });
 
       const plan = [
@@ -432,7 +476,7 @@ export class SqlParser {
           type: 'INSERT',
           rawQuery: sql,
           table,
-          columns: cols,
+          columns: cols.length > 0 ? cols : Object.keys(insertValues),
           insertValues,
         },
         plan,

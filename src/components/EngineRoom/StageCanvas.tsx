@@ -6,6 +6,7 @@ import {
   SimulationStep,
   WorkerRobotState,
   WaitQueueLaneRobot,
+  TableState,
 } from '../../types/database';
 import {
   Key,
@@ -40,15 +41,26 @@ interface AnchorPoint {
   y: number;
 }
 
+interface RelationshipLink {
+  id: string;
+  sourceTable: string;
+  sourceCol: string;
+  targetTable: string;
+  targetCol: string;
+  cardinality: string;
+  fromAnchorId: string;
+  toAnchorId: string;
+}
+
 /**
  * Character-by-character typing animation component with human cadence (~115ms)
  */
-const TypingCell: React.FC<{ text: string | number; isTyping?: boolean; prefix?: string }> = ({
+const TypingCell: React.FC<{ text: any; isTyping?: boolean; prefix?: string }> = ({
   text,
   isTyping = false,
   prefix = '',
 }) => {
-  const str = String(text ?? '');
+  const str = text !== undefined && text !== null ? String(text) : '';
   const [displayedLength, setDisplayedLength] = useState(isTyping ? 0 : str.length);
 
   useEffect(() => {
@@ -90,23 +102,8 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
 }) => {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const hasStudents = !!databaseState.Students;
-  const hasTutors = !!databaseState.Tutors;
-  const hasSessions = !!databaseState.Sessions;
-  const isCompletelyBlank = Object.keys(databaseState).length === 0;
-
-  const studentsTable = databaseState.Students || {
-    schema: { name: 'Students', columns: [], primaryKey: 'student_id' },
-    rows: [],
-  };
-  const tutorsTable = databaseState.Tutors || {
-    schema: { name: 'Tutors', columns: [], primaryKey: 'tutor_id' },
-    rows: [],
-  };
-  const sessionsTable = databaseState.Sessions || {
-    schema: { name: 'Sessions', columns: [], primaryKey: 'session_id' },
-    rows: [],
-  };
+  const tableEntries = Object.entries(databaseState);
+  const isCompletelyBlank = tableEntries.length === 0;
 
   const joinBeam = currentStep?.joinBeam;
   const keyToken = currentStep?.keyToken;
@@ -118,14 +115,79 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
   const highlightClause = currentStep?.sqlClauseHighlight;
 
   // Auto-scroll refs
-  const sessionsBottomRef = useRef<HTMLTableRowElement | null>(null);
-  const studentsBottomRef = useRef<HTMLTableRowElement | null>(null);
+  const tableBottomRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
   // Dynamic Anchor Points for PK ➔ FK Column Header Connectors
-  const [anchorPkStudent, setAnchorPkStudent] = useState<AnchorPoint | null>(null);
-  const [anchorPkTutor, setAnchorPkTutor] = useState<AnchorPoint | null>(null);
-  const [anchorFkStudent, setAnchorFkStudent] = useState<AnchorPoint | null>(null);
-  const [anchorFkTutor, setAnchorFkTutor] = useState<AnchorPoint | null>(null);
+  const [relationshipAnchors, setRelationshipAnchors] = useState<
+    Record<string, { from: AnchorPoint | null; to: AnchorPoint | null }>
+  >({});
+
+  // Helper for row-level lock
+  const getRowLock = (tableName: string, rowId: any): LockEntry | undefined => {
+    return activeLocks.find(
+      (l) =>
+        l.table.toLowerCase() === tableName.toLowerCase() &&
+        String(l.rowId) === String(rowId)
+    );
+  };
+
+  const isColumnProjected = (tableName: string, colName: string): boolean => {
+    const cols = currentStep?.projectedColumns;
+    if (cols && cols.length > 0) {
+      if (cols.includes('*') || cols.some((c) => c.trim() === '*')) {
+        return true;
+      }
+      const cleanCol = colName.toLowerCase();
+      return cols.some((c) => {
+        const clean = c.trim().toLowerCase();
+        if (clean === '*' || clean === `${tableName.toLowerCase()}.*`) return true;
+        const colPart = clean.includes('.') ? clean.split('.').pop() : clean;
+        const tablePart = clean.includes('.') ? clean.split('.')[0] : null;
+        if (tablePart && tablePart !== tableName.toLowerCase()) return false;
+        return colPart === cleanCol || clean === cleanCol;
+      });
+    }
+    if (activeSql) {
+      if (activeSql.includes('*')) return true;
+      return activeSql.toLowerCase().includes(colName.toLowerCase());
+    }
+    return false;
+  };
+
+  const isEntireRowProjected = (tableName: string): boolean => {
+    const cols = currentStep?.projectedColumns;
+    if (cols && cols.length > 0) {
+      if (cols.includes('*') || cols.some((c) => c.trim() === '*')) return true;
+      if (cols.some((c) => c.trim().toLowerCase() === `${tableName.toLowerCase()}.*`)) return true;
+      const table = databaseState[tableName];
+      if (!table || !table.schema?.columns || table.schema.columns.length === 0) return false;
+      return table.schema.columns.every((col) => isColumnProjected(tableName, col.name));
+    }
+    if (activeSql && activeSql.includes('*')) return true;
+    return false;
+  };
+
+  // Discover all active relationships
+  const relationships: RelationshipLink[] = [];
+  tableEntries.forEach(([tName, table]) => {
+    table.schema.columns.forEach((col) => {
+      if (col.isForeignKey && col.foreignKeyTarget) {
+        const targetTable = col.foreignKeyTarget.table;
+        const targetCol = col.foreignKeyTarget.column;
+        const relId = `${tName}.${col.name}->${targetTable}.${targetCol}`;
+        relationships.push({
+          id: relId,
+          sourceTable: tName,
+          sourceCol: col.name,
+          targetTable,
+          targetCol,
+          cardinality: col.foreignKeyCardinality || '1:M',
+          fromAnchorId: `anchor-pk-${targetTable.toLowerCase()}-${targetCol.toLowerCase()}`,
+          toAnchorId: `anchor-fk-${tName.toLowerCase()}-${col.name.toLowerCase()}`,
+        });
+      }
+    });
+  });
 
   const updateAnchorPositions = () => {
     if (!stageContainerRef.current) return;
@@ -141,10 +203,14 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
       };
     };
 
-    setAnchorPkStudent(getCenter('anchor-pk-student-header'));
-    setAnchorPkTutor(getCenter('anchor-pk-tutor-header'));
-    setAnchorFkStudent(getCenter('anchor-fk-student-header'));
-    setAnchorFkTutor(getCenter('anchor-fk-tutor-header'));
+    const newAnchors: Record<string, { from: AnchorPoint | null; to: AnchorPoint | null }> = {};
+    relationships.forEach((rel) => {
+      newAnchors[rel.id] = {
+        from: getCenter(rel.fromAnchorId),
+        to: getCenter(rel.toAnchorId),
+      };
+    });
+    setRelationshipAnchors(newAnchors);
   };
 
   useLayoutEffect(() => {
@@ -161,59 +227,331 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
   }, [databaseState, currentStep]);
 
   useEffect(() => {
-    if (ghostSlot?.table === 'Sessions' || currentStep?.targetTable === 'Sessions') {
-      sessionsBottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (ghostSlot?.table && tableBottomRefs.current[ghostSlot.table]) {
+      tableBottomRefs.current[ghostSlot.table]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-    if (ghostSlot?.table === 'Students' || currentStep?.targetTable === 'Students') {
-      studentsBottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [ghostSlot, currentStep]);
+  }, [ghostSlot]);
 
-  // Helper for row-level lock
-  const getRowLock = (tableName: string, rowId: any): LockEntry | undefined => {
-    return activeLocks.find(
-      (l) => l.table === tableName && String(l.rowId) === String(rowId)
+  // Separate parent tables from junction/child tables
+  const parentTables: [string, TableState][] = [];
+  const childTables: [string, TableState][] = [];
+
+  tableEntries.forEach(([tName, table]) => {
+    const fkCount = table.schema.columns.filter((c) => c.isForeignKey).length;
+    if (fkCount >= 2 || tName.toLowerCase() === 'sessions') {
+      childTables.push([tName, table]);
+    } else {
+      parentTables.push([tName, table]);
+    }
+  });
+
+  const renderTableCard = (tableName: string, table: TableState, isFullWidth = false) => {
+    const isTarget =
+      currentStep?.targetTable?.toLowerCase() === tableName.toLowerCase() ||
+      (activeSql && activeSql.toLowerCase().includes(tableName.toLowerCase()));
+
+    const isDrivingFocus =
+      highlightClause === 'FROM' &&
+      (currentStep?.targetTable?.toLowerCase() === tableName.toLowerCase() ||
+        (activeSql && activeSql.toLowerCase().includes(`from ${tableName.toLowerCase()}`)));
+
+    const isSelectTarget =
+      activeSql &&
+      activeSql.toUpperCase().includes('SELECT') &&
+      isTarget &&
+      !isDrivingFocus;
+
+    const fkColumns = table.schema.columns.filter((c) => c.isForeignKey);
+    const isJunction = fkColumns.length >= 2;
+
+    return (
+      <div
+        key={tableName}
+        className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden shadow-md flex flex-col relative z-10 ${
+          isDrivingFocus
+            ? 'border-[#275D38] ring-4 ring-emerald-500/40 shadow-2xl bg-emerald-50/20'
+            : isSelectTarget
+            ? 'border-cyan-500 ring-2 ring-cyan-400/30 shadow-lg bg-cyan-50/10'
+            : 'border-slate-200'
+        } ${isFullWidth ? 'w-full' : ''}`}
+      >
+        {/* Table Card Header */}
+        <div className="p-3 bg-[#275D38]/10 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#275D38]" />
+            <h3 className="font-mono font-bold text-xs text-[#275D38]">{tableName}</h3>
+            <span className="text-[10px] text-slate-500 font-mono">({table.rows.length} rows)</span>
+
+            {isDrivingFocus && (
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#275D38] text-white animate-pulse shadow-xs">
+                FROM Driving Table Focus
+              </span>
+            )}
+
+            {isSelectTarget && (
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-cyan-700 text-white shadow-sm flex items-center gap-1 animate-pulse">
+                <Sparkles className="w-3 h-3 text-cyan-200" /> SELECT Target ({tableName})
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 text-[10px] font-mono flex-wrap">
+            {isJunction && (
+              <div className="group relative cursor-help">
+                <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-900 border border-purple-300 font-bold flex items-center gap-1 shadow-xs transition hover:scale-105 hover:bg-purple-600 hover:text-white">
+                  <Layers className="w-3 h-3 text-purple-600 group-hover:text-white" />
+                  <span>M:M Junction</span>
+                </span>
+                <div className="absolute right-0 bottom-full mb-2 hidden group-hover:flex flex-col w-80 p-3.5 bg-slate-950/95 text-white rounded-2xl shadow-2xl z-50 text-xs font-sans border border-purple-500/40 pointer-events-none backdrop-blur animate-fadeIn">
+                  <div className="font-bold text-purple-300 flex items-center justify-between pb-1.5 border-b border-slate-800">
+                    <span className="flex items-center gap-1.5 font-bold">
+                      <Layers className="w-3.5 h-3.5 text-purple-400" />
+                      <span>M:M (Many-to-Many Junction Table)</span>
+                    </span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-900/80 text-purple-200 border border-purple-700">
+                      Associative Table
+                    </span>
+                  </div>
+                  <p className="text-slate-200 mt-2 text-[11px] leading-relaxed">
+                    Table <strong className="text-purple-400">{tableName}</strong> acts as an associative/junction table containing dual Foreign Keys to resolve Many-to-Many entity relationships.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {table.schema.primaryKey && (
+              <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1 font-semibold">
+                <Key className="w-3 h-3 text-amber-600" /> PK: {table.schema.primaryKey}
+              </span>
+            )}
+
+            {fkColumns.length > 0 && (
+              <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 flex items-center gap-1 font-semibold">
+                <Link className="w-3 h-3 text-blue-600" /> FK: {fkColumns.map((c) => c.name).join(', ')}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Table Card Body */}
+        <div className="overflow-x-auto max-h-64 overflow-y-auto">
+          <table className="w-full text-left text-xs font-mono border-collapse">
+            <thead>
+              <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px] sticky top-0 bg-slate-100 z-10">
+                <th className="p-2 w-8 text-center text-slate-400">#</th>
+                <th className="p-2 w-16 text-center text-slate-400">Lock</th>
+                {table.schema.columns.map((col) => {
+                  const isProj = isColumnProjected(tableName, col.name);
+                  const isPk = col.isPrimaryKey;
+                  const isFk = col.isForeignKey;
+                  const pkAnchorId = `anchor-pk-${tableName.toLowerCase()}-${col.name.toLowerCase()}`;
+                  const fkAnchorId = `anchor-fk-${tableName.toLowerCase()}-${col.name.toLowerCase()}`;
+
+                  return (
+                    <th
+                      key={col.name}
+                      id={isPk ? pkAnchorId : isFk ? fkAnchorId : undefined}
+                      className={`p-2 transition-colors duration-200 ${
+                        isProj
+                          ? 'text-cyan-950 bg-cyan-100/90 border-b-2 border-cyan-500 font-bold'
+                          : isPk
+                          ? 'text-amber-800 bg-amber-100/70 border-b-2 border-amber-400 font-bold'
+                          : isFk
+                          ? 'text-blue-800 bg-blue-100/70 border-b-2 border-blue-400 font-bold'
+                          : 'text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1 whitespace-nowrap">
+                        {isPk && <Key className="w-3 h-3 text-amber-600" />}
+                        {isFk && <Link className="w-3 h-3 text-blue-600" />}
+                        <span>
+                          {col.name}{' '}
+                          {isPk
+                            ? '(PK)'
+                            : isFk
+                            ? `(FK ${col.foreignKeyCardinality || '1:M'})`
+                            : `(${col.type})`}
+                        </span>
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-slate-700 text-[11px]">
+              {table.rows.length === 0 && (!ghostSlot || ghostSlot.table?.toLowerCase() !== tableName.toLowerCase()) ? (
+                <tr>
+                  <td
+                    colSpan={table.schema.columns.length + 2}
+                    className="p-4 text-center text-slate-400 italic text-[11px]"
+                  >
+                    Table ready! No rows inserted yet.
+                  </td>
+                </tr>
+              ) : (
+                table.rows.map((row, idx) => {
+                  const pkVal = row[table.schema.primaryKey];
+                  const lock = getRowLock(tableName, pkVal);
+                  const isNewlyAdded =
+                    currentStep?.targetTable?.toLowerCase() === tableName.toLowerCase() &&
+                    String(currentStep?.targetRowId) === String(pkVal);
+
+                  const rowPersistentStatus = currentStep?.evaluatedRowStatuses?.find(
+                    (es) =>
+                      es.table?.toLowerCase() === tableName.toLowerCase() &&
+                      ((pkVal !== undefined && String(es.rowId) === String(pkVal)) ||
+                        es.rowIndex === idx)
+                  )?.status;
+
+                  const isScanningThisRow =
+                    currentStep?.targetTable?.toLowerCase() === tableName.toLowerCase() &&
+                    (currentStep?.targetRowIndex === idx ||
+                      (pkVal !== undefined && String(currentStep?.targetRowId) === String(pkVal)));
+
+                  const isRowMatch =
+                    rowPersistentStatus === 'MATCH' ||
+                    (isScanningThisRow && currentStep?.predicateEvaluation?.passed === true);
+                  const isRowFailed =
+                    rowPersistentStatus === 'FILTERED' ||
+                    (isScanningThisRow && currentStep?.predicateEvaluation?.passed === false);
+
+                  const isGrabbingKeyFromThisRow =
+                    keyToken?.active &&
+                    keyToken.sourceTable?.toLowerCase() === tableName.toLowerCase() &&
+                    String(keyToken.keyValue) === String(pkVal);
+
+                  return (
+                    <tr
+                      key={idx}
+                      className={`relative transition-all duration-300 ${
+                        isRowMatch
+                          ? 'bg-red-50/40 text-slate-900 font-bold'
+                          : isRowFailed
+                          ? 'bg-rose-50/80 text-slate-400 opacity-60'
+                          : lock
+                          ? 'bg-rose-50 text-rose-900'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      {/* 1. BOLD RED STRIKE-THROUGH LINE ON WHERE FAILURE */}
+                      {isRowFailed && (
+                        <div className="absolute inset-y-1/2 left-2 right-2 h-1 bg-red-600 shadow-md rounded-full pointer-events-none z-30 animate-strike-through" />
+                      )}
+
+                      {/* 2. BOLD RED CIRCLE ON WHERE MATCH (FULL ROW IF SELECT *) */}
+                      {(isRowMatch || isGrabbingKeyFromThisRow) && isEntireRowProjected(tableName) && (
+                        <div className="absolute -inset-1 rounded-2xl border-3 border-red-600 bg-red-500/10 pointer-events-none z-20 animate-red-circle shadow-lg" />
+                      )}
+
+                      <td className="p-2 text-center text-[10px] text-slate-400 bg-slate-50">
+                        {idx + 1}
+                      </td>
+                      <td className="p-2 text-center">
+                        {isGrabbingKeyFromThisRow ? (
+                          <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-900 border border-amber-400 text-[9px] font-extrabold animate-pulse">
+                            <Key className="w-3 h-3" />
+                            <span>FK Key</span>
+                          </div>
+                        ) : isRowMatch ? (
+                          <span className="text-red-600 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-red-100 border border-red-300 px-1.5 py-0.5 rounded-full">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> MATCH
+                          </span>
+                        ) : isRowFailed ? (
+                          <span className="text-rose-700 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded-full">
+                            <XCircle className="w-3.5 h-3.5" /> FILTER
+                          </span>
+                        ) : lock ? (
+                          <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300 text-[9px] font-bold animate-lock-pulse">
+                            <Lock className="w-3 h-3" />
+                            <span>PADLOCK</span>
+                          </div>
+                        ) : (
+                          <Unlock className="w-3 h-3 text-emerald-600/40 inline" />
+                        )}
+                      </td>
+
+                      {/* Dynamic Column Data Cells */}
+                      {table.schema.columns.map((col) => {
+                        const cellVal = row[col.name];
+                        const isProj = isColumnProjected(tableName, col.name);
+                        const isPk = col.isPrimaryKey;
+                        const isFk = col.isForeignKey;
+
+                        return (
+                          <td
+                            key={col.name}
+                            className={`p-2 font-mono relative transition-colors duration-200 ${
+                              isRowMatch && isProj
+                                ? 'text-red-950 font-bold bg-red-50/60'
+                                : isPk
+                                ? 'text-amber-700 bg-amber-50/30'
+                                : isFk
+                                ? 'text-blue-700 bg-blue-50/20'
+                                : ''
+                            }`}
+                          >
+                            {/* Individual cell red circle if NOT entire row circled */}
+                            {isRowMatch && !isEntireRowProjected(tableName) && isProj && (
+                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
+                            )}
+                            <div className="flex items-center gap-1 relative z-10">
+                              {isPk && <Key className="w-3 h-3 text-amber-600 shrink-0" />}
+                              {isFk && <Link className="w-3 h-3 text-blue-600 shrink-0" />}
+                              <span>
+                                <TypingCell
+                                  text={cellVal}
+                                  isTyping={
+                                    isNewlyAdded &&
+                                    (currentStep?.type === 'STEP_SNAP_PAYLOAD' ||
+                                      currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')
+                                  }
+                                  prefix={isPk || isFk ? '#' : ''}
+                                />
+                              </span>
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })
+              )}
+
+              {/* GHOST SLOT FOR NEW TUPLE INSERTION */}
+              {ghostSlot && ghostSlot.table?.toLowerCase() === tableName.toLowerCase() && (
+                <tr
+                  ref={(el) => {
+                    tableBottomRefs.current[tableName] = el;
+                  }}
+                  className="bg-emerald-50 border-2 border-dashed border-[#275D38] animate-pulse text-[#275D38] font-bold"
+                >
+                  <td className="p-2 text-center text-[10px] bg-slate-100 font-mono">
+                    {table.rows.length + 1}
+                  </td>
+                  <td className="p-2 text-center">
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300 text-[9px]">
+                      <Lock className="w-3 h-3" /> PADLOCK
+                    </span>
+                  </td>
+                  {table.schema.columns.map((col) => {
+                    const ghostVal = ghostSlot.rowData?.[col.name] ?? '';
+                    return (
+                      <td key={col.name} className="p-2 font-mono">
+                        <TypingCell
+                          text={ghostVal || `${col.name}...`}
+                          isTyping={true}
+                          prefix={col.isPrimaryKey || col.isForeignKey ? '#' : ''}
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     );
-  };
-
-  const isTraversingStudentsToSessions =
-    currentStep?.title?.includes('Transferred Foreign Key') ||
-    currentStep?.actionSummary?.includes('Carried new PK') ||
-    currentStep?.title?.includes('Students ➔ Sessions');
-
-  const isTraversingSessionsToTutors =
-    keyToken?.active || joinBeam?.active;
-
-  const isColumnProjected = (tableName: string, colName: string): boolean => {
-    if (!activeSql) return false;
-    const cols = currentStep?.projectedColumns;
-    if (cols && cols.length > 0) {
-      if (cols.includes('*')) {
-        const isDriving = activeSql.toLowerCase().includes(`from ${tableName.toLowerCase()}`);
-        const isJoinTarget = activeSql.toLowerCase().includes(`join ${tableName.toLowerCase()}`);
-        return isDriving || isJoinTarget;
-      }
-      const cleanCol = colName.toLowerCase();
-      return cols.some((c) => {
-        const colPart = c.split('.').pop()?.toLowerCase();
-        const tablePart = c.includes('.') ? c.split('.')[0].toLowerCase() : null;
-        if (tablePart && tablePart !== tableName.toLowerCase()) return false;
-        return colPart === cleanCol || c.toLowerCase() === cleanCol;
-      });
-    }
-    if (activeSql.includes('*')) {
-      return activeSql.toLowerCase().includes(`from ${tableName.toLowerCase()}`) || activeSql.toLowerCase().includes(`join ${tableName.toLowerCase()}`);
-    }
-    return activeSql.toLowerCase().includes(colName.toLowerCase());
-  };
-
-  const isEntireRowProjected = (tableName: string): boolean => {
-    if (!activeSql) return false;
-    const cols = currentStep?.projectedColumns;
-    if (cols && cols.length > 0) {
-      return cols.includes('*');
-    }
-    return activeSql.includes('*');
   };
 
   return (
@@ -279,44 +617,7 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
             </div>
 
             <div className="flex-1 overflow-x-auto text-slate-200 flex items-center gap-2 flex-wrap text-[11px] leading-relaxed">
-              {/* Parse & Highlight Clauses */}
-              {activeSql.split('\n').map((line, lIdx) => (
-                <span key={lIdx} className="whitespace-pre">
-                  {line.includes('SELECT') ? (
-                    <>
-                      <span className={`px-2 py-0.5 rounded transition font-bold ${highlightClause === 'SELECT' ? 'bg-[#275D38] text-white ring-2 ring-emerald-400 shadow' : 'bg-cyan-900/60 text-cyan-300 border border-cyan-500/40 shadow-xs'}`}>
-                        SELECT * (Projection Active)
-                      </span>{' '}
-                      <span className={`px-1.5 py-0.5 rounded transition ${highlightClause === 'FROM' ? 'bg-[#275D38] text-white font-bold ring-2 ring-emerald-400 shadow' : 'text-blue-400'}`}>
-                        FROM Sessions
-                      </span>{' '}
-                      {line.includes('JOIN') && (
-                        <span className={`px-1.5 py-0.5 rounded transition ${highlightClause === 'JOIN' ? 'bg-[#D4AF37] text-slate-950 font-bold ring-2 ring-yellow-400 shadow' : 'text-amber-400'}`}>
-                          JOIN Tutors ON Sessions.tutor_id = Tutors.tutor_id
-                        </span>
-                      )}{' '}
-                      {line.includes('WHERE') && (
-                        <span className={`px-1.5 py-0.5 rounded transition ${highlightClause === 'WHERE' ? 'bg-[#D4AF37] text-slate-950 font-bold ring-2 ring-yellow-400 shadow' : 'text-emerald-400'}`}>
-                          WHERE {line.split('WHERE')[1]}
-                        </span>
-                      )}
-                    </>
-                  ) : line.includes('INSERT') ? (
-                    <>
-                      <span className={`px-1.5 py-0.5 rounded transition ${highlightClause === 'INSERT' ? 'bg-[#275D38] text-white font-bold ring-2 ring-emerald-400 shadow' : 'text-blue-400'}`}>
-                        {line.split('VALUES')[0]}
-                      </span>
-                      {line.includes('VALUES') && (
-                        <span className={`px-1.5 py-0.5 rounded transition ${highlightClause === 'VALUES' ? 'bg-[#D4AF37] text-slate-950 font-bold ring-2 ring-yellow-400 shadow' : 'text-emerald-400'}`}>
-                          VALUES {line.split('VALUES')[1]}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span>{line}</span>
-                  )}
-                </span>
-              ))}
+              <span className="font-mono">{activeSql}</span>
             </div>
 
             {highlightClause && (
@@ -353,18 +654,18 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
               <span className="text-[10px] font-mono font-bold text-[#275D38]">
                 Dock #1 (Alpha)
               </span>
-              <span className="text-[9px] text-slate-500 font-sans">Main Agent</span>
+              <span className="text-[9px] text-slate-500 font-sans">Primary Worker</span>
             </div>
 
             {/* Dock 2: Beta */}
-            <div className="flex-1 rounded-xl border-2 border-dashed border-[#D4AF37]/50 bg-white/80 p-2.5 flex flex-col items-center justify-center gap-1 relative shadow-xs">
-              <div className="w-9 h-9 rounded-full border border-yellow-400 bg-amber-50 flex items-center justify-center shadow-inner">
-                <div className="w-4 h-4 rounded-full bg-[#D4AF37]" />
+            <div className="flex-1 rounded-xl border-2 border-dashed border-blue-300 bg-white/80 p-2.5 flex flex-col items-center justify-center gap-1 relative shadow-xs">
+              <div className="w-9 h-9 rounded-full border border-blue-400 bg-blue-50 flex items-center justify-center shadow-inner">
+                <div className="w-4 h-4 rounded-full bg-blue-600" />
               </div>
-              <span className="text-[10px] font-mono font-bold text-amber-800">
+              <span className="text-[10px] font-mono font-bold text-blue-900">
                 Dock #2 (Beta)
               </span>
-              <span className="text-[9px] text-slate-500 font-sans">Multi-Table</span>
+              <span className="text-[9px] text-slate-500 font-sans">Secondary Worker</span>
             </div>
 
             {/* Dock 3: Gamma */}
@@ -393,7 +694,7 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
                   <span>🏗️ Database Construction Stage Ready</span>
                 </h3>
                 <p className="text-xs text-slate-500 font-sans leading-relaxed">
-                  No tables exist in the database yet. Follow the <strong>Tutorial Steps</strong> on the left to write your first <code className="bg-slate-200 px-1.5 py-0.5 rounded font-mono text-[#275D38]">CREATE TABLE</code> command and watch the Wolverine Architect Robot construct the table foundation!
+                  No tables exist in the database yet. Write your <code className="bg-slate-200 px-1.5 py-0.5 rounded font-mono text-[#275D38]">CREATE TABLE</code> command and click <strong>Execute SQL</strong> to watch the Wolverine Architect Robot construct the table foundation!
                 </p>
               </div>
               <div className="flex items-center gap-2 text-[11px] font-mono text-slate-500 bg-white px-3.5 py-1.5 rounded-full border border-slate-200 shadow-xs">
@@ -403,686 +704,25 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
             </div>
           )}
 
-          {/* TOP ROW: Students & Tutors Tables (Rendered when present) */}
-          {(hasStudents || hasTutors) && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 relative z-10">
-              {hasStudents && (
+          {/* PARENT ENTITY TABLES (Top Grid) */}
+          {parentTables.length > 0 && (
             <div
-              className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden shadow-md flex flex-col ${
-                highlightClause === 'FROM' && (currentStep?.targetTable === 'Students' || activeSql?.toLowerCase().includes('from students'))
-                  ? 'border-[#275D38] ring-4 ring-emerald-500/40 shadow-2xl bg-emerald-50/20'
-                  : activeSql?.toLowerCase().includes('students')
-                  ? 'border-cyan-500 ring-2 ring-cyan-400/30 shadow-lg bg-cyan-50/10'
-                  : 'border-slate-200'
+              className={`grid gap-5 relative z-10 ${
+                parentTables.length === 1
+                  ? 'grid-cols-1'
+                  : 'grid-cols-1 lg:grid-cols-2'
               }`}
             >
-              <div className="p-3 bg-[#275D38]/10 border-b border-slate-200 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#275D38]" />
-                  <h3 className="font-mono font-bold text-xs text-[#275D38]">Students</h3>
-                  <span className="text-[10px] text-slate-500 font-mono">({studentsTable.rows.length} rows)</span>
-                  {highlightClause === 'FROM' && (currentStep?.targetTable === 'Students' || activeSql?.toLowerCase().includes('from students')) && (
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#275D38] text-white animate-pulse">
-                      FROM Driving Table Focus
-                    </span>
-                  )}
-                  {activeSql?.toLowerCase().includes('students') && highlightClause !== 'FROM' && (
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-cyan-700 text-white shadow-sm flex items-center gap-1 animate-pulse">
-                      <Sparkles className="w-3 h-3 text-cyan-200" /> SELECT Target (Students)
-                    </span>
-                  )}
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1 font-semibold">
-                  <Key className="w-3 h-3 text-amber-600" /> PK Table
-                </span>
-              </div>
-
-              <div className="overflow-x-auto max-h-56 overflow-y-auto">
-                <table className="w-full text-left text-xs font-mono border-collapse">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px] sticky top-0 bg-slate-100 z-10">
-                      <th className="p-2 w-8 text-center text-slate-400">#</th>
-                      <th className="p-2 w-12 text-center text-slate-400">Lock</th>
-                      {/* DIRECT COLUMN HEADER ANCHOR: Students.student_id PK */}
-                      <th
-                        id="anchor-pk-student-header"
-                        className={`p-2 font-bold border-b-2 ${
-                          isColumnProjected('Students', 'student_id')
-                            ? 'text-cyan-950 bg-cyan-100/80 border-cyan-500'
-                            : 'text-amber-800 bg-amber-100/70 border-amber-400'
-                        }`}
-                      >
-                        <div className="flex items-center gap-1">
-                          <Key className="w-3 h-3 text-amber-600" />
-                          <span>student_id (PK)</span>
-                        </div>
-                      </th>
-                      <th className={`p-2 ${isColumnProjected('Students', 'first_name') ? 'text-cyan-950 bg-cyan-100/80 border-b-2 border-cyan-500 font-bold' : ''}`}>first_name</th>
-                      <th className={`p-2 ${isColumnProjected('Students', 'last_name') ? 'text-cyan-950 bg-cyan-100/80 border-b-2 border-cyan-500 font-bold' : ''}`}>last_name</th>
-                      <th className={`p-2 ${isColumnProjected('Students', 'major') ? 'text-cyan-950 bg-cyan-100/80 border-b-2 border-cyan-500 font-bold' : ''}`}>major</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-slate-700 text-[11px]">
-                    {studentsTable.rows.map((row, idx) => {
-                      const lock = getRowLock('Students', row.student_id);
-                      const isNewlyAdded =
-                        currentStep?.targetTable === 'Students' &&
-                        currentStep?.targetRowId === row.student_id;
-
-                      const studentPersistentStatus = currentStep?.evaluatedRowStatuses?.find(
-                        (es) => es.table === 'Students' && (String(es.rowId) === String(row.student_id) || es.rowIndex === idx)
-                      )?.status;
-
-                      const isScanningStudent = currentStep?.targetTable === 'Students' && currentStep?.targetRowIndex === idx;
-                      const isStudentMatch = studentPersistentStatus === 'MATCH' || (isScanningStudent && currentStep?.predicateEvaluation?.passed === true);
-                      const isStudentFailed = studentPersistentStatus === 'FILTERED' || (isScanningStudent && currentStep?.predicateEvaluation?.passed === false);
-
-                      return (
-                        <tr
-                          key={row.student_id}
-                          className={`relative transition-all duration-300 ${
-                            isStudentMatch
-                              ? 'bg-red-50/40 text-slate-900 font-bold'
-                              : isStudentFailed
-                              ? 'bg-rose-50/80 text-slate-400 opacity-60'
-                              : lock
-                              ? 'bg-rose-50 text-rose-900'
-                              : 'hover:bg-slate-50'
-                          }`}
-                        >
-                          {/* 1. BOLD RED STRIKE-THROUGH LINE ON WHERE FAILURE */}
-                          {isStudentFailed && (
-                            <div className="absolute inset-y-1/2 left-2 right-2 h-1 bg-red-600 shadow-md rounded-full pointer-events-none z-30 animate-strike-through" />
-                          )}
-
-                          {/* 2. CLEAN BOLD RED CIRCLE ON WHERE MATCH (FULL ROW IF SELECT *) */}
-                          {isStudentMatch && isEntireRowProjected('Students') && (
-                            <div className="absolute -inset-1 rounded-2xl border-3 border-red-600 bg-red-500/10 pointer-events-none z-20 animate-red-circle shadow-lg" />
-                          )}
-
-                          <td className="p-2 text-center text-[10px] text-slate-400 bg-slate-50">{idx}</td>
-                          <td className="p-2 text-center">
-                            {isStudentMatch ? (
-                              <span className="text-red-600 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-red-100 border border-red-300 px-1.5 py-0.5 rounded-full">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> MATCH
-                              </span>
-                            ) : isStudentFailed ? (
-                              <span className="text-rose-700 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded-full">
-                                <XCircle className="w-3.5 h-3.5" /> FILTER
-                              </span>
-                            ) : lock ? (
-                              <div className="inline-flex items-center text-rose-600" title="Exclusive Lock">
-                                <Lock className="w-3 h-3" />
-                              </div>
-                            ) : (
-                              <Unlock className="w-3 h-3 text-emerald-600/40 inline" />
-                            )}
-                          </td>
-                          <td className={`p-2 font-bold relative ${isStudentMatch && isColumnProjected('Students', 'student_id') ? 'text-red-950 bg-red-50/60' : 'text-amber-700 bg-amber-50/30'}`}>
-                            {isStudentMatch && !isEntireRowProjected('Students') && isColumnProjected('Students', 'student_id') && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <div className="flex items-center gap-1 relative z-10">
-                              <Key className="w-3 h-3 text-amber-600" />
-                              <span>#{row.student_id}</span>
-                            </div>
-                          </td>
-                          <td className={`p-2 font-medium relative ${isStudentMatch && isColumnProjected('Students', 'first_name') ? 'text-red-950 font-bold bg-red-50/60' : ''}`}>
-                            {isStudentMatch && !isEntireRowProjected('Students') && isColumnProjected('Students', 'first_name') && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <span className="relative z-10">
-                              <TypingCell text={row.first_name} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} />
-                            </span>
-                          </td>
-                          <td className={`p-2 font-medium relative ${isStudentMatch && isColumnProjected('Students', 'last_name') ? 'text-red-950 font-bold bg-red-50/60' : ''}`}>
-                            {isStudentMatch && !isEntireRowProjected('Students') && isColumnProjected('Students', 'last_name') && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <span className="relative z-10">
-                              <TypingCell text={row.last_name} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} />
-                            </span>
-                          </td>
-                          <td className={`p-2 relative ${isStudentMatch && isColumnProjected('Students', 'major') ? 'text-red-950 font-bold bg-red-50/60' : 'text-slate-500'}`}>
-                            {isStudentMatch && !isEntireRowProjected('Students') && isColumnProjected('Students', 'major') && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <span className="relative z-10">
-                              <TypingCell text={row.major} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} />
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-
-                    {/* Ghost Slot for New Student Insertion with Typing Animation */}
-                    {ghostSlot && ghostSlot.table === 'Students' && (
-                      <tr
-                        ref={studentsBottomRef}
-                        className="bg-emerald-50 border-2 border-dashed border-[#275D38] animate-pulse text-[#275D38] font-bold"
-                      >
-                        <td className="p-2 text-center text-[10px] bg-slate-100 font-mono">
-                          {studentsTable.rows.length}
-                        </td>
-                        <td className="p-2 text-center">
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300 text-[9px]">
-                            <Lock className="w-3 h-3" /> PADLOCK
-                          </span>
-                        </td>
-                        <td className="p-2 text-amber-700 flex items-center gap-1 bg-amber-50/40">
-                          <Key className="w-3 h-3 text-amber-600" />
-                          <span>#{ghostSlot.rowId} (New PK)</span>
-                        </td>
-                        <td className="p-2">
-                          <TypingCell text={ghostSlot.rowData.first_name} isTyping={true} />
-                        </td>
-                        <td className="p-2">
-                          <TypingCell text={ghostSlot.rowData.last_name} isTyping={true} />
-                        </td>
-                        <td className="p-2">
-                          <TypingCell text={ghostSlot.rowData.major} isTyping={true} />
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              {parentTables.map(([tName, tbl]) => renderTableCard(tName, tbl))}
             </div>
           )}
 
-          {/* TUTORS TABLE */}
-          {hasTutors && (
-            <div
-              className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden shadow-md flex flex-col ${
-                highlightClause === 'JOIN' && (currentStep?.targetTable === 'Tutors' || activeSql?.toLowerCase().includes('tutors'))
-                  ? 'border-[#D4AF37] ring-4 ring-yellow-400/40 shadow-xl'
-                  : activeSql?.toLowerCase().includes('tutors')
-                  ? 'border-cyan-500 ring-2 ring-cyan-400/30 shadow-lg bg-cyan-50/10'
-                  : 'border-slate-200'
-              }`}
-            >
-              <div className="p-3 bg-[#275D38]/10 border-b border-slate-200 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#275D38]" />
-                  <h3 className="font-mono font-bold text-xs text-[#275D38]">Tutors</h3>
-                  <span className="text-[10px] text-slate-500 font-mono">({tutorsTable.rows.length} rows)</span>
-                  {activeSql?.toLowerCase().includes('tutors') && (
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-cyan-700 text-white shadow-sm flex items-center gap-1 animate-pulse">
-                      <Sparkles className="w-3 h-3 text-cyan-200" /> SELECT Target (Tutors)
-                    </span>
-                  )}
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1 font-semibold">
-                  <Key className="w-3 h-3 text-amber-600" /> PK Table
-                </span>
-              </div>
-
-              <div className="overflow-x-auto max-h-56 overflow-y-auto">
-                <table className="w-full text-left text-xs font-mono border-collapse">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px] sticky top-0 bg-slate-100 z-10">
-                      <th className="p-2 w-8 text-center text-slate-400">#</th>
-                      <th className="p-2 w-16 text-center text-slate-400">Lock</th>
-                      {/* DIRECT COLUMN HEADER ANCHOR: Tutors.tutor_id PK */}
-                      <th
-                        id="anchor-pk-tutor-header"
-                        className={`p-2 font-bold border-b-2 ${
-                          isColumnProjected('Tutors', 'tutor_id')
-                            ? 'text-cyan-950 bg-cyan-100/80 border-cyan-500'
-                            : 'text-amber-800 bg-amber-100/70 border-amber-400'
-                        }`}
-                      >
-                        <div className="flex items-center gap-1">
-                          <Key className="w-3 h-3 text-amber-600" />
-                          <span>tutor_id (PK)</span>
-                        </div>
-                      </th>
-                      <th className={`p-2 ${isColumnProjected('Tutors', 'name') ? 'text-cyan-950 bg-cyan-100/80 border-b-2 border-cyan-500 font-bold' : ''}`}>name</th>
-                      <th className={`p-2 ${isColumnProjected('Tutors', 'subject_specialty') || isColumnProjected('Tutors', 'specialty') ? 'text-cyan-950 bg-cyan-100/80 border-b-2 border-cyan-500 font-bold' : 'text-slate-500'}`}>specialty</th>
-                      <th className={`p-2 ${isColumnProjected('Tutors', 'max_capacity') || isColumnProjected('Tutors', 'capacity') ? 'text-cyan-950 bg-cyan-100/80 border-b-2 border-cyan-500 font-bold' : ''}`}>capacity</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-slate-700 text-[11px]">
-                    {tutorsTable.rows.map((row, idx) => {
-                      const lock = getRowLock('Tutors', row.tutor_id);
-                      const isKeyUnlockingThisRow =
-                        keyToken &&
-                        keyToken.targetTable === 'Tutors' &&
-                        String(row.tutor_id) === String(keyToken.targetPkValue);
-
-                      const tutorPersistentStatus = currentStep?.evaluatedRowStatuses?.find(
-                        (es) => es.table === 'Tutors' && (String(es.rowId) === String(row.tutor_id) || es.rowIndex === idx)
-                      )?.status;
-
-                      const isTutorMatch = tutorPersistentStatus === 'MATCH' || isKeyUnlockingThisRow;
-
-                      return (
-                        <tr
-                          key={row.tutor_id}
-                          className={`relative transition-all duration-300 ${
-                            isTutorMatch
-                              ? 'bg-red-50/40 text-slate-900 font-bold'
-                              : lock
-                              ? 'bg-rose-50 text-rose-900'
-                              : 'hover:bg-slate-50'
-                          }`}
-                        >
-                          {/* CLEAN BOLD RED CIRCLE ON MATCHED PARENT TUTOR (FULL ROW IF SELECT *) */}
-                          {isTutorMatch && isEntireRowProjected('Tutors') && (
-                            <div className="absolute -inset-1 rounded-2xl border-3 border-red-600 bg-red-500/10 pointer-events-none z-20 animate-red-circle shadow-lg" />
-                          )}
-
-                          <td className="p-2 text-center text-[10px] text-slate-400 bg-slate-50">{idx}</td>
-                          <td className="p-2 text-center">
-                            {isKeyUnlockingThisRow ? (
-                              <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 border border-amber-400 text-[9px] font-extrabold animate-bounce">
-                                <Key className="w-3 h-3 text-amber-700" />
-                                <span>UNLOCKED!</span>
-                              </div>
-                            ) : isTutorMatch ? (
-                              <span className="text-red-600 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-red-100 border border-red-300 px-1.5 py-0.5 rounded-full">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> MATCH
-                              </span>
-                            ) : lock ? (
-                              <div
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300 text-[9px] font-bold animate-lock-pulse"
-                                title={`Exclusive PADLOCK held by ${lock.holderThreadName}`}
-                              >
-                                <Lock className="w-3 h-3" />
-                                <span>PADLOCK</span>
-                              </div>
-                            ) : (
-                              <Unlock className="w-3 h-3 text-emerald-600/40 inline" />
-                            )}
-                          </td>
-                          <td className={`p-2 font-bold relative ${isTutorMatch && isColumnProjected('Tutors', 'tutor_id') ? 'text-red-950 bg-red-50/60' : 'text-amber-700 bg-amber-50/30'}`}>
-                            {isTutorMatch && !isEntireRowProjected('Tutors') && isColumnProjected('Tutors', 'tutor_id') && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <div className="flex items-center gap-1 relative z-10">
-                              <Key className="w-3 h-3 text-amber-600" />
-                              <span>#{row.tutor_id}</span>
-                            </div>
-                          </td>
-                          <td className={`p-2 font-medium relative ${isTutorMatch && isColumnProjected('Tutors', 'name') ? 'text-red-950 font-bold bg-red-50/60' : ''}`}>
-                            {isTutorMatch && !isEntireRowProjected('Tutors') && isColumnProjected('Tutors', 'name') && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <span className="relative z-10">{row.name}</span>
-                          </td>
-                          <td className={`p-2 relative ${isTutorMatch && (isColumnProjected('Tutors', 'subject_specialty') || isColumnProjected('Tutors', 'specialty')) ? 'text-red-950 font-bold bg-red-50/60' : 'text-slate-500'}`}>
-                            {isTutorMatch && !isEntireRowProjected('Tutors') && (isColumnProjected('Tutors', 'subject_specialty') || isColumnProjected('Tutors', 'specialty')) && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <span className="relative z-10">{row.subject_specialty}</span>
-                          </td>
-                          <td className={`p-2 relative ${isTutorMatch && (isColumnProjected('Tutors', 'max_capacity') || isColumnProjected('Tutors', 'capacity')) ? 'text-red-950 font-bold bg-red-50/60' : ''}`}>
-                            {isTutorMatch && !isEntireRowProjected('Tutors') && (isColumnProjected('Tutors', 'max_capacity') || isColumnProjected('Tutors', 'capacity')) && (
-                              <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                            )}
-                            <span className="relative z-10">{row.max_capacity}</span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+          {/* CHILD / JUNCTION TABLES (Bottom Row) */}
+          {childTables.length > 0 && (
+            <div className="flex flex-col gap-5 relative z-10">
+              {childTables.map(([tName, tbl]) => renderTableCard(tName, tbl, true))}
             </div>
           )}
-          </div>
-          )}
-
-          {/* BOTTOM ROW: Sessions Table (Central Relational Hub with Column Header Anchors) */}
-          {hasSessions && (
-            <div
-              className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden shadow-md flex flex-col relative z-10 ${
-              highlightClause === 'FROM'
-                ? 'border-[#275D38] ring-4 ring-emerald-500/40 shadow-2xl bg-emerald-50/20'
-                : activeSql?.includes('SELECT')
-                ? 'border-cyan-500 ring-2 ring-cyan-400/30 shadow-lg bg-cyan-50/10'
-                : 'border-slate-200'
-            }`}
-          >
-            <div className="p-3 bg-[#275D38]/10 border-b border-slate-200 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#275D38]" />
-                <h3 className="font-mono font-bold text-xs text-[#275D38]">Sessions</h3>
-                <span className="text-[10px] text-slate-500 font-mono">({sessionsTable.rows.length} rows)</span>
-                {highlightClause === 'FROM' && (
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#275D38] text-white animate-pulse">
-                    FROM Driving Table Focus
-                  </span>
-                )}
-                {activeSql?.includes('SELECT') && (
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-cyan-700 text-white shadow-sm flex items-center gap-1 animate-pulse">
-                    <Sparkles className="w-3 h-3 text-cyan-200" /> SELECT * Target (Sessions)
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2 text-[10px] font-mono">
-                {/* M:M Junction Badge with Hover Tooltip */}
-                <div className="group relative cursor-help">
-                  <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-900 border border-purple-300 font-bold flex items-center gap-1 shadow-xs transition hover:scale-105 hover:bg-purple-600 hover:text-white">
-                    <Layers className="w-3 h-3 text-purple-600 group-hover:text-white" />
-                    <span>M:M Junction</span>
-                  </span>
-                  <div className="absolute right-0 bottom-full mb-2 hidden group-hover:flex flex-col w-80 p-3.5 bg-slate-950/95 text-white rounded-2xl shadow-2xl z-50 text-xs font-sans border border-purple-500/40 pointer-events-none backdrop-blur animate-fadeIn">
-                    <div className="font-bold text-purple-300 flex items-center justify-between pb-1.5 border-b border-slate-800">
-                      <span className="flex items-center gap-1.5 font-bold">
-                        <Layers className="w-3.5 h-3.5 text-purple-400" />
-                        <span>M:M (Many-to-Many Junction Table)</span>
-                      </span>
-                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-900/80 text-purple-200 border border-purple-700">
-                        Associative Table
-                      </span>
-                    </div>
-                    <p className="text-slate-200 mt-2 text-[11px] leading-relaxed">
-                      <strong className="text-purple-400">Students</strong> and <strong className="text-purple-400">Tutors</strong> share a Many-to-Many relationship (many students can work with many tutors). In relational databases, this is resolved by using <code className="text-white bg-slate-800 px-1 py-0.5 rounded font-mono">Sessions</code> as an associative/junction table containing dual Foreign Keys (<code className="text-blue-300 font-mono">student_id</code> & <code className="text-blue-300 font-mono">tutor_id</code>).
-                    </p>
-                    <div className="mt-2 pt-1.5 border-t border-slate-800 text-[10px] text-slate-400 font-mono">
-                      Bridges Students (M) ➔ Sessions ➔ Tutors (M)
-                    </div>
-                  </div>
-                </div>
-
-                <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1 font-semibold">
-                  <Key className="w-3 h-3 text-amber-600" /> PK: session_id
-                </span>
-                <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 flex items-center gap-1 font-semibold">
-                  <Link className="w-3 h-3" /> FK: student_id, tutor_id
-                </span>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto max-h-64 overflow-y-auto">
-              <table className="w-full text-left text-xs font-mono border-collapse">
-                <thead>
-                  <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px] sticky top-0 bg-slate-100 z-10">
-                    <th className="p-2 w-8 text-center text-slate-400">#</th>
-                    <th className="p-2 w-16 text-center text-slate-400">Lock</th>
-                    <th className={`p-2 ${isColumnProjected('Sessions', 'session_id') ? 'bg-cyan-100/80 text-cyan-950 font-bold border-b-2 border-cyan-500' : 'text-amber-700'}`}>session_id (PK)</th>
-                    {/* DIRECT COLUMN HEADER ANCHOR: Sessions.student_id FK */}
-                    <th
-                      id="anchor-fk-student-header"
-                      className={`p-2 font-bold border-b-2 ${
-                        isColumnProjected('Sessions', 'student_id')
-                          ? 'text-cyan-950 bg-cyan-100/80 border-cyan-500'
-                          : 'text-blue-800 bg-blue-100/70 border-blue-400'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1">
-                        <Link className="w-3 h-3 text-blue-600" />
-                        <span>student_id (FK 🔑)</span>
-                      </div>
-                    </th>
-                    {/* DIRECT COLUMN HEADER ANCHOR: Sessions.tutor_id FK */}
-                    <th
-                      id="anchor-fk-tutor-header"
-                      className={`p-2 font-bold border-b-2 ${
-                        isColumnProjected('Sessions', 'tutor_id')
-                          ? 'text-cyan-950 bg-cyan-100/80 border-cyan-500'
-                          : 'text-blue-800 bg-blue-100/70 border-blue-400'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1">
-                        <Link className="w-3 h-3 text-blue-600" />
-                        <span>tutor_id (FK 🔑)</span>
-                      </div>
-                    </th>
-                    <th className={`p-2 ${isColumnProjected('Sessions', 'session_date') ? 'bg-cyan-100/80 text-cyan-950 font-bold border-b-2 border-cyan-500' : ''}`}>session_date</th>
-                    <th className={`p-2 ${isColumnProjected('Sessions', 'status') ? 'bg-cyan-100/80 text-cyan-950 font-bold border-b-2 border-cyan-500' : ''}`}>status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-slate-700 text-[11px]">
-                  {sessionsTable.rows.map((row, idx) => {
-                    const lock = getRowLock('Sessions', row.session_id);
-                    const isScanningThisRow =
-                      currentStep?.targetTable === 'Sessions' &&
-                      currentStep?.targetRowIndex === idx;
-                    const predicatePass = currentStep?.predicateEvaluation?.passed;
-
-                    const isGrabbingKeyFromThisRow =
-                      keyToken &&
-                      keyToken.sourceTable === 'Sessions' &&
-                      currentStep?.targetRowIndex === idx;
-
-                    const isNewlyAdded =
-                      currentStep?.targetTable === 'Sessions' &&
-                      currentStep?.targetRowId === row.session_id;
-
-                    const persistentStatus = currentStep?.evaluatedRowStatuses?.find(
-                      (es) => (es.table === undefined || es.table === 'Sessions') && (String(es.rowId) === String(row.session_id) || es.rowIndex === idx)
-                    )?.status;
-
-                    const isWhereMatch = persistentStatus === 'MATCH' || (isScanningThisRow && predicatePass === true);
-                    const isWhereFailed = persistentStatus === 'FILTERED' || (isScanningThisRow && predicatePass === false);
-
-                    return (
-                      <tr
-                        key={row.session_id}
-                        className={`relative transition-all duration-300 ${
-                          isWhereMatch || isGrabbingKeyFromThisRow
-                            ? 'bg-red-50/40 text-slate-900 font-bold'
-                            : isWhereFailed
-                            ? 'bg-rose-50/80 text-slate-400 opacity-60'
-                            : lock
-                            ? 'bg-rose-50 text-rose-900'
-                            : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        {/* 1. BOLD RED STRIKE-THROUGH LINE ON WHERE FAILURE (PERSISTS UNTIL COMPLETION) */}
-                        {isWhereFailed && (
-                          <div className="absolute inset-y-1/2 left-2 right-2 h-1 bg-red-600 shadow-md rounded-full pointer-events-none z-30 animate-strike-through" />
-                        )}
-
-                        {/* 2. CLEAN BOLD RED CIRCLE / RING ON WHERE MATCH (FULL ROW IF SELECT *) */}
-                        {(isWhereMatch || isGrabbingKeyFromThisRow) && isEntireRowProjected('Sessions') && (
-                          <div className="absolute -inset-1 rounded-2xl border-3 border-red-600 bg-red-500/10 pointer-events-none z-20 animate-red-circle shadow-lg" />
-                        )}
-
-                        <td className="p-2 text-center text-[10px] text-slate-400 bg-slate-50">{idx}</td>
-                        <td className="p-2 text-center">
-                          {isGrabbingKeyFromThisRow ? (
-                            <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-900 border border-amber-400 text-[9px] font-extrabold animate-pulse">
-                              <Key className="w-3 h-3" />
-                              <span>FK Key</span>
-                            </div>
-                          ) : isWhereMatch ? (
-                            <span className="text-red-600 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-red-100 border border-red-300 px-1.5 py-0.5 rounded-full">
-                              <CheckCircle2 className="w-3.5 h-3.5" /> MATCH
-                            </span>
-                          ) : isWhereFailed ? (
-                            <span className="text-rose-700 font-extrabold flex items-center justify-center gap-0.5 text-[10px] bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded-full">
-                              <XCircle className="w-3.5 h-3.5" /> FILTER
-                            </span>
-                          ) : lock ? (
-                            <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300 text-[9px] font-bold animate-lock-pulse">
-                              <Lock className="w-3 h-3" />
-                              <span>PADLOCK</span>
-                            </div>
-                          ) : (
-                            <Unlock className="w-3 h-3 text-emerald-600/40 inline" />
-                          )}
-                        </td>
-                        <td className={`p-2 font-bold relative ${isWhereMatch && isColumnProjected('Sessions', 'session_id') ? 'text-red-950 bg-red-50/60' : 'text-amber-700'}`}>
-                          {isWhereMatch && !isEntireRowProjected('Sessions') && isColumnProjected('Sessions', 'session_id') && (
-                            <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                          )}
-                          <span className="relative z-10">
-                            <TypingCell text={row.session_id} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} prefix="#" />
-                          </span>
-                        </td>
-                        <td className={`p-2 font-medium relative ${isWhereMatch && isColumnProjected('Sessions', 'student_id') ? 'text-red-950 bg-red-50/60' : 'text-blue-700 bg-blue-50/20'}`}>
-                          {isWhereMatch && !isEntireRowProjected('Sessions') && isColumnProjected('Sessions', 'student_id') && (
-                            <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                          )}
-                          <div className="flex items-center gap-1 relative z-10">
-                            <Link className="w-3 h-3 text-blue-600" />
-                            <TypingCell text={row.student_id} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} prefix="#" />
-                          </div>
-                        </td>
-                        <td className={`p-2 font-medium relative ${isWhereMatch && isColumnProjected('Sessions', 'tutor_id') ? 'text-red-950 bg-red-50/60' : 'text-blue-700 bg-blue-50/20'}`}>
-                          {isWhereMatch && !isEntireRowProjected('Sessions') && isColumnProjected('Sessions', 'tutor_id') && (
-                            <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                          )}
-                          <span className="flex items-center gap-1 relative z-10">
-                            <Link className="w-3 h-3 text-blue-600" />
-                            <TypingCell text={row.tutor_id} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} prefix="#" />
-                          </span>
-                        </td>
-                        <td className={`p-2 relative ${isWhereMatch && isColumnProjected('Sessions', 'session_date') ? 'text-red-950 font-bold bg-red-50/60' : 'text-slate-500'}`}>
-                          {isWhereMatch && !isEntireRowProjected('Sessions') && isColumnProjected('Sessions', 'session_date') && (
-                            <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                          )}
-                          <span className="relative z-10">
-                            <TypingCell text={row.session_date} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} />
-                          </span>
-                        </td>
-                        <td className={`p-2 relative ${isWhereMatch && isColumnProjected('Sessions', 'status') ? 'bg-red-50/60' : ''}`}>
-                          {isWhereMatch && !isEntireRowProjected('Sessions') && isColumnProjected('Sessions', 'status') && (
-                            <div className="absolute -inset-0.5 rounded-lg border-2 border-red-600 bg-red-500/15 pointer-events-none z-20 animate-red-circle shadow-sm" />
-                          )}
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-semibold relative z-10 ${
-                              row.status === 'Confirmed'
-                                ? 'bg-emerald-100 text-[#275D38] border border-emerald-300'
-                                : row.status === 'Completed'
-                                ? 'bg-blue-100 text-blue-800 border border-blue-300'
-                                : 'bg-amber-100 text-amber-800 border border-amber-300'
-                            }`}
-                          >
-                            <TypingCell text={row.status} isTyping={isNewlyAdded && (currentStep?.type === 'STEP_SNAP_PAYLOAD' || currentStep?.type === 'STEP_DISPATCH_FROM_QUEUE')} />
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {/* Physical Highlighted Empty Ghost Slot at Bottom of Sessions with Character Typing Effect */}
-                  {ghostSlot && ghostSlot.table === 'Sessions' && (
-                    <tr
-                      ref={sessionsBottomRef}
-                      className="bg-emerald-50 border-2 border-dashed border-[#275D38] animate-pulse text-[#275D38] font-bold"
-                    >
-                      <td className="p-2 text-center text-[10px] bg-slate-100 font-mono">
-                        {sessionsTable.rows.length}
-                      </td>
-                      <td className="p-2 text-center">
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300 text-[9px]">
-                          <Lock className="w-3 h-3" /> PADLOCK
-                        </span>
-                      </td>
-                      <td className="p-2 text-amber-700">
-                        <TypingCell text={ghostSlot.rowId} isTyping={true} prefix="#" />
-                      </td>
-                      <td className="p-2 text-blue-700 bg-blue-50/20">
-                        <TypingCell text={ghostSlot.rowData.student_id} isTyping={true} prefix="#" />
-                      </td>
-                      <td className="p-2 text-blue-700 bg-blue-50/20">
-                        <TypingCell text={ghostSlot.rowData.tutor_id} isTyping={true} prefix="#" />
-                      </td>
-                      <td className="p-2 text-slate-600">
-                        <TypingCell text={ghostSlot.rowData.session_date} isTyping={true} />
-                      </td>
-                      <td className="p-2 text-[#275D38] font-semibold">
-                        <TypingCell text={`${ghostSlot.rowData.status} (Snapping...)`} isTyping={true} />
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          )}
-
-          {/* DYNAMIC CUSTOM CONSTRUCTED DATABASE TABLES (from DDL Builder) */}
-          {Object.keys(databaseState)
-            .filter((k) => !['Students', 'Tutors', 'Sessions'].includes(k))
-            .map((tableName) => {
-              const table = databaseState[tableName];
-              if (!table) return null;
-              const isTarget = currentStep?.targetTable === tableName || activeSql?.toLowerCase().includes(tableName.toLowerCase());
-              return (
-                <div
-                  key={tableName}
-                  className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden shadow-md flex flex-col relative z-10 ${
-                    isTarget ? 'border-[#275D38] ring-4 ring-emerald-500/40 shadow-2xl bg-emerald-50/20' : 'border-slate-200'
-                  }`}
-                >
-                  <div className="p-3 bg-[#275D38]/10 border-b border-slate-200 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-[#275D38]" />
-                      <h3 className="font-mono font-bold text-xs text-[#275D38]">{tableName}</h3>
-                      <span className="text-[10px] text-slate-500 font-mono">({table.rows.length} rows)</span>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-[#275D38] font-bold border border-emerald-300">
-                        Custom Built Table
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] font-mono">
-                      <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1 font-semibold">
-                        <Key className="w-3 h-3 text-amber-600" /> PK: {table.schema.primaryKey}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="overflow-x-auto max-h-56 overflow-y-auto">
-                    <table className="w-full text-left text-xs font-mono border-collapse">
-                      <thead>
-                        <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-[11px] sticky top-0 bg-slate-100 z-10">
-                          <th className="p-2 w-8 text-center text-slate-400">#</th>
-                          <th className="p-2 w-16 text-center text-slate-400">Lock</th>
-                          {table.schema.columns.map((col) => (
-                            <th
-                              key={col.name}
-                              className={`p-2 ${
-                                col.isPrimaryKey
-                                  ? 'text-amber-800 bg-amber-100/70 border-b-2 border-amber-400 font-bold'
-                                  : col.isForeignKey
-                                  ? 'text-blue-800 bg-blue-100/70 border-b-2 border-blue-400 font-bold'
-                                  : ''
-                              }`}
-                            >
-                              <div className="flex items-center gap-1">
-                                {col.isPrimaryKey && <Key className="w-3 h-3 text-amber-600" />}
-                                {col.isForeignKey && <Link className="w-3 h-3 text-blue-600" />}
-                                <span>{col.name} {col.isPrimaryKey ? '(PK)' : col.isForeignKey ? `(FK ${col.foreignKeyCardinality || '1:M'})` : `(${col.type})`}</span>
-                              </div>
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-slate-700 text-[11px]">
-                        {table.rows.length === 0 ? (
-                          <tr>
-                            <td colSpan={table.schema.columns.length + 2} className="p-3 text-center text-slate-400 italic text-[10px]">
-                              Table created! Ready to receive tuples.
-                            </td>
-                          </tr>
-                        ) : (
-                          table.rows.map((row, rIdx) => (
-                            <tr key={rIdx} className="hover:bg-slate-50 transition">
-                              <td className="p-2 text-center text-[10px] text-slate-400 bg-slate-50">{rIdx + 1}</td>
-                              <td className="p-2 text-center">
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[9px]">
-                                  <Lock className="w-2.5 h-2.5 opacity-40" /> FREE
-                                </span>
-                              </td>
-                              {table.schema.columns.map((col) => (
-                                <td key={col.name} className="p-2 font-mono">
-                                  {String(row[col.name] !== undefined ? row[col.name] : '')}
-                                </td>
-                              ))}
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              );
-            })}
 
           {/* PHYSICAL QUERY RESULTS TRAY AT BOTTOM OF STAGE */}
           <div className="bg-slate-50 rounded-2xl border-2 border-dashed border-[#275D38]/50 p-4 flex flex-col gap-2.5 shadow-md relative z-10">
@@ -1111,7 +751,7 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
                 Results Tray Empty — Execute a SQL Query to watch Foreign Key tokens unlock parent records and populate rows step-by-step
               </div>
             ) : (
-              <div className="overflow-x-auto max-h-44 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+              <div className="overflow-x-auto max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white">
                 <table className="w-full text-left text-[11px] font-mono border-collapse">
                   <thead>
                     <tr className={`border-b ${activeSql?.includes('SELECT') ? 'bg-cyan-100/70 text-cyan-950 border-cyan-400' : 'bg-slate-100 text-[#275D38] border-slate-200'}`}>
@@ -1154,137 +794,107 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
             </filter>
           </defs>
 
-          {/* 1. Dotted Line: Students <th> (PK student_id) ➔ Sessions <th> (FK student_id) */}
-          {anchorPkStudent && anchorFkStudent && (
-            <g>
-              <path
-                d={`M ${anchorPkStudent.x} ${anchorPkStudent.y} C ${anchorPkStudent.x} ${anchorPkStudent.y + 60}, ${anchorFkStudent.x} ${anchorFkStudent.y - 60}, ${anchorFkStudent.x} ${anchorFkStudent.y}`}
-                stroke="#275D38"
-                strokeWidth={isTraversingStudentsToSessions ? '4' : '2.5'}
-                strokeDasharray="6 4"
-                fill="none"
-                filter="url(#uvuGlowEffect)"
-                className={isTraversingStudentsToSessions ? 'animate-pulse' : 'opacity-85'}
-              />
-              {/* Endpoint Circles directly at Column Headers */}
-              <circle cx={anchorPkStudent.x} cy={anchorPkStudent.y} r="5" fill="#275D38" stroke="#ffffff" strokeWidth="2" />
-              <circle cx={anchorFkStudent.x} cy={anchorFkStudent.y} r="5" fill="#275D38" stroke="#ffffff" strokeWidth="2" />
-            </g>
-          )}
+          {/* Dotted Curves for All Relational Links */}
+          {relationships.map((rel) => {
+            const anchor = relationshipAnchors[rel.id];
+            if (!anchor?.from || !anchor?.to) return null;
 
-          {/* 2. Dotted Line: Tutors <th> (PK tutor_id) ➔ Sessions <th> (FK tutor_id) */}
-          {anchorPkTutor && anchorFkTutor && (
-            <g>
-              <path
-                d={`M ${anchorPkTutor.x} ${anchorPkTutor.y} C ${anchorPkTutor.x} ${anchorPkTutor.y + 60}, ${anchorFkTutor.x} ${anchorFkTutor.y - 60}, ${anchorFkTutor.x} ${anchorFkTutor.y}`}
+            const isTraversing =
+              (keyToken?.active && keyToken.targetTable?.toLowerCase() === rel.targetTable.toLowerCase()) ||
+              (joinBeam?.active && joinBeam.toTable?.toLowerCase() === rel.targetTable.toLowerCase());
+
+            return (
+              <g key={rel.id}>
+                <path
+                  d={`M ${anchor.from.x} ${anchor.from.y} C ${anchor.from.x} ${anchor.from.y + 60}, ${anchor.to.x} ${anchor.to.y - 60}, ${anchor.to.x} ${anchor.to.y}`}
+                  stroke={rel.cardinality === '1:1' ? '#0284C7' : '#275D38'}
+                  strokeWidth={isTraversing ? '4' : '2.5'}
+                  strokeDasharray="6 4"
+                  fill="none"
+                  filter="url(#uvuGlowEffect)"
+                  className={isTraversing ? 'animate-pulse' : 'opacity-85'}
+                />
+                <circle cx={anchor.from.x} cy={anchor.from.y} r="5" fill="#275D38" stroke="#ffffff" strokeWidth="2" />
+                <circle cx={anchor.to.x} cy={anchor.to.y} r="5" fill="#275D38" stroke="#ffffff" strokeWidth="2" />
+              </g>
+            );
+          })}
+
+          {/* Animated Laser Beam on Live Join Traversal */}
+          {joinBeam?.active && (
+            <g className="animate-laser-beam">
+              <line
+                x1={joinBeam.fromTable === 'Sessions' ? '50%' : '35%'}
+                y1="60%"
+                x2={joinBeam.toTable === 'Students' ? '35%' : '75%'}
+                y2="30%"
                 stroke="#D4AF37"
-                strokeWidth={isTraversingSessionsToTutors ? '4' : '2.5'}
-                strokeDasharray="6 4"
-                fill="none"
+                strokeWidth="6"
+                strokeLinecap="round"
                 filter="url(#uvuGlowEffect)"
-                className={isTraversingSessionsToTutors ? 'animate-pulse' : 'opacity-90'}
               />
-              {/* Endpoint Circles directly at Column Headers */}
-              <circle cx={anchorPkTutor.x} cy={anchorPkTutor.y} r="5" fill="#D4AF37" stroke="#ffffff" strokeWidth="2" />
-              <circle cx={anchorFkTutor.x} cy={anchorFkTutor.y} r="5" fill="#D4AF37" stroke="#ffffff" strokeWidth="2" />
             </g>
           )}
         </svg>
 
-        {/* Interactive Labeled Cardinality Badges in center of paths */}
-        {anchorPkStudent && anchorFkStudent && (
-          <div
-            className="absolute transform -translate-x-1/2 -translate-y-1/2 pointer-events-auto z-30"
-            style={{
-              left: `${(anchorPkStudent.x + anchorFkStudent.x) / 2}px`,
-              top: `${(anchorPkStudent.y + anchorFkStudent.y) / 2}px`,
-            }}
-          >
-            <div className="group relative cursor-help">
-              <span
-                className={`text-[10px] font-mono px-2.5 py-1 rounded-full border shadow-lg flex items-center gap-1.5 font-bold transition-all duration-200 hover:scale-110 ${
-                  isTraversingStudentsToSessions
-                    ? 'bg-[#275D38] text-white border-emerald-300 ring-4 ring-emerald-300/40 animate-pulse'
-                    : 'bg-emerald-50 text-[#275D38] border-emerald-400 hover:bg-[#275D38] hover:text-white'
-                }`}
-              >
-                <span className="px-1.5 py-0.2 rounded bg-emerald-200/80 text-[#275D38] font-bold text-[9px] group-hover:bg-white group-hover:text-[#275D38]">
-                  1:M
-                </span>
-                <Link className="w-3 h-3" />
-                <span>student_id ➔ student_id</span>
-              </span>
+        {/* Relationship Cardinality Badges with Rich Tooltips */}
+        {relationships.map((rel) => {
+          const anchor = relationshipAnchors[rel.id];
+          if (!anchor?.from || !anchor?.to) return null;
 
-              {/* Rich Tooltip Popover on Hover */}
-              <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 hidden group-hover:flex flex-col w-80 p-3.5 bg-slate-950/95 text-white rounded-2xl shadow-2xl z-50 text-xs font-sans border border-emerald-500/40 pointer-events-none backdrop-blur animate-fadeIn">
-                <div className="font-bold text-emerald-300 flex items-center justify-between pb-1.5 border-b border-slate-800">
-                  <span className="flex items-center gap-1.5 font-bold">
-                    <Key className="w-3.5 h-3.5 text-amber-400" />
-                    <span>1:M (One-to-Many Relationship)</span>
+          const isTraversing =
+            (keyToken?.active && keyToken.targetTable?.toLowerCase() === rel.targetTable.toLowerCase()) ||
+            (joinBeam?.active && joinBeam.toTable?.toLowerCase() === rel.targetTable.toLowerCase());
+
+          return (
+            <div
+              key={rel.id}
+              className="absolute transform -translate-x-1/2 -translate-y-1/2 pointer-events-auto z-30"
+              style={{
+                left: `${(anchor.from.x + anchor.to.x) / 2}px`,
+                top: `${(anchor.from.y + anchor.to.y) / 2}px`,
+              }}
+            >
+              <div className="group relative cursor-help">
+                <span
+                  className={`text-[10px] font-mono px-2.5 py-1 rounded-full border shadow-lg flex items-center gap-1.5 font-bold transition-all duration-200 hover:scale-110 ${
+                    isTraversing
+                      ? 'bg-[#275D38] text-white border-emerald-300 ring-4 ring-emerald-300/40 animate-pulse'
+                      : 'bg-emerald-50 text-[#275D38] border-emerald-400 hover:bg-[#275D38] hover:text-white'
+                  }`}
+                >
+                  <span className="px-1.5 py-0.2 rounded bg-emerald-200/80 text-[#275D38] font-bold text-[9px] group-hover:bg-white group-hover:text-[#275D38]">
+                    {rel.cardinality}
                   </span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-900/80 text-emerald-200 border border-emerald-700">
-                    Foreign Key
+                  <Link className="w-3 h-3" />
+                  <span>
+                    {rel.sourceCol} ➔ {rel.targetCol}
                   </span>
-                </div>
-                <p className="text-slate-200 mt-2 text-[11px] leading-relaxed">
-                  <strong className="text-emerald-400">One Student</strong> in <code className="text-white bg-slate-800 px-1 py-0.5 rounded font-mono">Students</code> can book <strong className="text-emerald-400">Many Sessions</strong> in <code className="text-white bg-slate-800 px-1 py-0.5 rounded font-mono">Sessions</code>. Each session belongs to exactly one student.
-                </p>
-                <div className="mt-2 pt-1.5 border-t border-slate-800 text-[10px] text-slate-400 font-mono flex items-center justify-between">
-                  <span>Parent PK: Students.student_id (1)</span>
-                  <span>➔</span>
-                  <span>Child FK: Sessions.student_id (M)</span>
+                </span>
+
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 hidden group-hover:flex flex-col w-80 p-3.5 bg-slate-950/95 text-white rounded-2xl shadow-2xl z-50 text-xs font-sans border border-emerald-500/40 pointer-events-none backdrop-blur animate-fadeIn">
+                  <div className="font-bold text-emerald-300 flex items-center justify-between pb-1.5 border-b border-slate-800">
+                    <span className="flex items-center gap-1.5 font-bold">
+                      <Key className="w-3.5 h-3.5 text-amber-400" />
+                      <span>{rel.cardinality} Relational Link</span>
+                    </span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-900/80 text-emerald-200 border border-emerald-700">
+                      Foreign Key
+                    </span>
+                  </div>
+                  <p className="text-slate-200 mt-2 text-[11px] leading-relaxed">
+                    Referential constraint linking child table <strong className="text-emerald-400">{rel.sourceTable}.{rel.sourceCol}</strong> to parent table <strong className="text-emerald-400">{rel.targetTable}.{rel.targetCol}</strong>.
+                  </p>
+                  <div className="mt-2 pt-1.5 border-t border-slate-800 text-[10px] text-slate-400 font-mono flex items-center justify-between">
+                    <span>Parent PK: {rel.targetTable}.{rel.targetCol} (1)</span>
+                    <span>➔</span>
+                    <span>Child FK: {rel.sourceTable}.{rel.sourceCol} ({rel.cardinality === '1:1' ? '1' : 'M'})</span>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
-
-        {anchorPkTutor && anchorFkTutor && (
-          <div
-            className="absolute transform -translate-x-1/2 -translate-y-1/2 pointer-events-auto z-30"
-            style={{
-              left: `${(anchorPkTutor.x + anchorFkTutor.x) / 2}px`,
-              top: `${(anchorPkTutor.y + anchorFkTutor.y) / 2}px`,
-            }}
-          >
-            <div className="group relative cursor-help">
-              <span
-                className={`text-[10px] font-mono px-2.5 py-1 rounded-full border shadow-lg flex items-center gap-1.5 font-bold transition-all duration-200 hover:scale-110 ${
-                  isTraversingSessionsToTutors
-                    ? 'bg-[#D4AF37] text-slate-950 border-yellow-400 ring-4 ring-yellow-300/40 animate-pulse'
-                    : 'bg-amber-50 text-amber-900 border-amber-400 hover:bg-[#D4AF37] hover:text-slate-950'
-                }`}
-              >
-                <span className="px-1.5 py-0.2 rounded bg-amber-200/80 text-amber-900 font-bold text-[9px] group-hover:bg-slate-900 group-hover:text-amber-300">
-                  1:M
-                </span>
-                <Link className="w-3 h-3" />
-                <span>tutor_id ➔ tutor_id</span>
-              </span>
-
-              {/* Rich Tooltip Popover on Hover */}
-              <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 hidden group-hover:flex flex-col w-80 p-3.5 bg-slate-950/95 text-white rounded-2xl shadow-2xl z-50 text-xs font-sans border border-yellow-500/40 pointer-events-none backdrop-blur animate-fadeIn">
-                <div className="font-bold text-yellow-300 flex items-center justify-between pb-1.5 border-b border-slate-800">
-                  <span className="flex items-center gap-1.5 font-bold">
-                    <Key className="w-3.5 h-3.5 text-amber-400" />
-                    <span>1:M (One-to-Many Relationship)</span>
-                  </span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-yellow-900/80 text-yellow-200 border border-yellow-700">
-                    Foreign Key
-                  </span>
-                </div>
-                <p className="text-slate-200 mt-2 text-[11px] leading-relaxed">
-                  <strong className="text-yellow-400">One Tutor</strong> in <code className="text-white bg-slate-800 px-1 py-0.5 rounded font-mono">Tutors</code> can conduct <strong className="text-yellow-400">Many Sessions</strong> in <code className="text-white bg-slate-800 px-1 py-0.5 rounded font-mono">Sessions</code>. Each session is assigned to exactly one tutor.
-                </p>
-                <div className="mt-2 pt-1.5 border-t border-slate-800 text-[10px] text-slate-400 font-mono flex items-center justify-between">
-                  <span>Parent PK: Tutors.tutor_id (1)</span>
-                  <span>➔</span>
-                  <span>Child FK: Sessions.tutor_id (M)</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+          );
+        })}
       </div>
 
       {/* 2D Animated Worker Robots Layer with Dynamic Unclipped Speech Bubbles */}
@@ -1296,7 +906,6 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
           const isSnapping = robot.status === 'SNAPPING_ROW';
           const isSuccess = robot.status === 'SUCCESS';
 
-          // Safe clamping for speech bubble positioning so it is NEVER clipped
           const isNearLeft = robot.x <= 28;
           const isNearRight = robot.x >= 72;
 
@@ -1334,7 +943,6 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
                     )}
                     <span className="text-slate-100">{robot.speech}</span>
                   </div>
-                  {/* Speech Bubble Pointer Triangle */}
                   <div
                     className="w-3 h-3 bg-slate-900 border-r-2 border-b-2 border-[#275D38] rotate-45 absolute -bottom-1.5"
                     style={pointerAlignStyle}
@@ -1352,55 +960,46 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
                 </div>
               )}
 
-              {/* Physical Payload Data Card in Hands */}
-              {isHoldingCard && !isHoldingKey && (
-                <div className="mb-1.5 p-2 px-3 rounded-xl bg-gradient-to-r from-[#275D38] to-[#1b4327] border-2 border-emerald-400 text-white shadow-2xl flex flex-col gap-0.5 text-[10px] font-mono animate-pulse">
-                  <div className="flex items-center gap-1 font-bold text-emerald-200">
-                    <FileText className="w-3 h-3 text-emerald-300" />
-                    <span>Payload: {robot.carryingCard?.title}</span>
-                  </div>
+              {/* TANGIBLE DATA PAYLOAD CARD IN HANDS */}
+              {isHoldingCard && robot.carryingCard && (
+                <div className="mb-2 p-2 px-3 rounded-xl bg-white border-2 border-[#275D38] text-[#275D38] shadow-2xl flex items-center gap-2 text-xs font-mono font-bold animate-bounce">
+                  <FileText className="w-4 h-4 text-[#275D38]" />
+                  <span>{robot.carryingCard.title}</span>
                 </div>
               )}
 
-              {/* 2D SVG Robot Body (UVU Emerald Green & Gold) */}
-              <div className="relative">
+              {/* PHYSICAL ROBOT AVATAR */}
+              <div
+                className={`relative w-12 h-12 rounded-2xl flex items-center justify-center shadow-2xl border-2 transition-all duration-300 ${
+                  isBlocked
+                    ? 'border-amber-500 ring-4 ring-amber-400/50 animate-shake'
+                    : isHoldingKey
+                    ? 'border-yellow-400 ring-4 ring-yellow-300/60 shadow-yellow-500/50'
+                    : isSuccess
+                    ? 'border-emerald-400 ring-4 ring-emerald-300/50'
+                    : 'border-white'
+                }`}
+                style={{
+                  backgroundColor: robot.accentHex || '#275D38',
+                }}
+              >
+                <Cpu className="w-6 h-6 text-white" />
                 {isBlocked && (
-                  <div className="absolute -inset-2.5 rounded-full border-2 border-dashed border-amber-500 animate-spin" />
+                  <div className="absolute -top-1 -right-1 p-1 bg-amber-500 text-white rounded-full shadow">
+                    <Lock className="w-3 h-3" />
+                  </div>
                 )}
                 {isHoldingKey && (
-                  <div className="absolute -inset-2.5 rounded-full bg-yellow-400/30 animate-pulse" />
+                  <div className="absolute -top-1 -right-1 p-1 bg-yellow-400 text-slate-950 rounded-full shadow animate-pulse">
+                    <Key className="w-3 h-3 fill-current" />
+                  </div>
                 )}
-                {isSnapping && (
-                  <div className="absolute -inset-2.5 rounded-full bg-emerald-500/30 animate-ping" />
-                )}
+              </div>
 
-                <svg width="46" height="54" viewBox="0 0 48 56" fill="none" className="filter drop-shadow-md">
-                  <line x1="24" y1="12" x2="24" y2="2" stroke="#64748b" strokeWidth="2" />
-                  <circle cx="24" cy="2" r="3" fill={isBlocked ? '#f59e0b' : isHoldingKey ? '#d97706' : '#275D38'} />
-                  <rect x="8" y="10" width="32" height="22" rx="6" fill="#0f172a" stroke="#334155" strokeWidth="2" />
-                  <rect x="12" y="14" width="24" height="12" rx="3" fill="#1e293b" />
-                  {isBlocked ? (
-                    <>
-                      <circle cx="18" cy="20" r="2.5" fill="#f59e0b" />
-                      <circle cx="30" cy="20" r="2.5" fill="#f59e0b" />
-                    </>
-                  ) : (
-                    <>
-                      <circle cx="18" cy="20" r="2.5" fill="#38bdf8" />
-                      <circle cx="30" cy="20" r="2.5" fill="#38bdf8" />
-                    </>
-                  )}
-                  {/* Robot Body (UVU Green) */}
-                  <rect x="10" y="34" width="28" height="18" rx="4" fill="#275D38" />
-                  <circle cx="24" cy="43" r="3" fill="#D4AF37" />
-                  <ellipse cx="24" cy="53" rx="8" ry="3" fill="#334155" />
-                </svg>
-
-                <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap">
-                  <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded shadow text-white bg-[#275D38]">
-                    {robot.name}
-                  </span>
-                </div>
+              {/* Robot Name & TxID Badge */}
+              <div className="mt-1 px-2 py-0.5 rounded-full bg-slate-900/90 text-white text-[10px] font-mono font-semibold shadow flex items-center gap-1">
+                <span>{robot.name}</span>
+                {robot.txId && <span className="text-emerald-400 font-normal">({robot.txId})</span>}
               </div>
             </div>
           );

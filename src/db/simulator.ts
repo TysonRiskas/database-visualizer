@@ -2136,12 +2136,14 @@ export class SimulationGenerator {
     }
 
     const projectRow = (r: RowData, cols: string[]): RowData => {
-      if (cols.includes('*')) return { ...r };
+      if (cols.includes('*') || cols.some((c) => c.trim() === '*')) {
+        return { ...r };
+      }
       const out: RowData = {};
       cols.forEach((col) => {
-        const cleanCol = col.split('.').pop() || col;
+        const cleanCol = col.split('.').pop()?.trim() || col.trim();
         const matchedKey = Object.keys(r).find((k) => k.toLowerCase() === cleanCol.toLowerCase()) || cleanCol;
-        out[cleanCol] = r[matchedKey] !== undefined ? r[matchedKey] : null;
+        out[cleanCol] = r[matchedKey] !== undefined ? r[matchedKey] : (r[col] !== undefined ? r[col] : null);
       });
       return out;
     };
@@ -2961,9 +2963,23 @@ export class SimulationGenerator {
           waitingLocksSnapshot: lockMgr.getWaitQueue(),
         });
       } else if (ast.type === 'INSERT' && ast.insertValues) {
-        const targetTable = state[ast.table];
+        const insertVals = ast.insertValues;
+        const targetTableName = Object.keys(state).find((k) => k.toLowerCase() === ast.table.toLowerCase()) || ast.table;
+        const targetTable = state[targetTableName];
         if (targetTable) {
-          targetTable.rows.push(ast.insertValues);
+          const rowPayload: Record<string, any> = {};
+          const valEntries = Object.entries(insertVals);
+          targetTable.schema.columns.forEach((col, cIdx) => {
+            if (insertVals[col.name] !== undefined) {
+              rowPayload[col.name] = insertVals[col.name];
+            } else if (valEntries[cIdx] !== undefined) {
+              rowPayload[col.name] = valEntries[cIdx][1];
+            }
+          });
+          // Merge all attributes
+          Object.assign(rowPayload, insertVals);
+
+          targetTable.rows.push(rowPayload);
           currentLsn++;
           steps.push({
             stepIndex: stepCounter++,
@@ -2973,11 +2989,11 @@ export class SimulationGenerator {
             threadId: 't1',
             threadName,
             threadColor,
-            title: `📥 Seed Record Materialized in '${ast.table}'`,
-            actionSummary: `Populated initial seed row into '${ast.table}': ${JSON.stringify(ast.insertValues)}`,
+            title: `📥 Seed Record Materialized in '${targetTableName}'`,
+            actionSummary: `Populated initial seed row into '${targetTableName}': ${JSON.stringify(rowPayload)}`,
             pedagogicalDetail: `Tuple Insertion: Row written to data page buffer under Exclusive Lock.`,
             timestamp: SimulationGenerator.getTimestamp(),
-            targetTable: ast.table,
+            targetTable: targetTableName,
             activeSqlString: ast.rawQuery,
             workerStatesSnapshot: [
               {
@@ -2989,7 +3005,7 @@ export class SimulationGenerator {
                 status: 'INSERTING',
                 x: 50,
                 y: 50,
-                speech: `Inserted seed tuple into '${ast.table}'!`,
+                speech: `Inserted seed tuple into '${targetTableName}'!`,
               },
             ],
             tableStateSnapshot: JSON.parse(JSON.stringify(state)),
