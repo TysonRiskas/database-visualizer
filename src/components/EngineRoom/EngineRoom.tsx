@@ -3,7 +3,7 @@ import { DatabaseState, LockEntry, SimulationStep, WorkerRobotState } from '../.
 import { TableVisualizer } from './TableVisualizer';
 import { WorkerRobots } from './WorkerRobots';
 import { WalVisualizer } from './WalVisualizer';
-import { Cpu, Terminal, Shield, Info, Sparkles, AlertCircle } from 'lucide-react';
+import { Bot, Terminal, Shield, Info, Sparkles, AlertCircle } from 'lucide-react';
 
 interface EngineRoomProps {
   databaseState: DatabaseState;
@@ -28,7 +28,7 @@ export const EngineRoom: React.FC<EngineRoomProps> = ({
       <div className="p-3 border-b border-slate-800 bg-slate-900/95 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 z-20">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400">
-            <Cpu className="w-4 h-4" />
+            <Bot className="w-4 h-4" />
           </div>
           <div>
             <div className="flex items-center gap-2">

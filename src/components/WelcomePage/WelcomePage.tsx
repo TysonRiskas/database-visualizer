@@ -5,7 +5,7 @@ import {
   Layers,
   Key,
   Lock,
-  Cpu,
+  Bot,
   ArrowRight,
   BookOpen,
   ShieldCheck,
@@ -64,7 +64,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="p-3.5 rounded-2xl bg-emerald-50 text-[#275D38] border border-emerald-200 shadow-sm group-hover:scale-110 transition duration-300">
-                <Cpu className="w-7 h-7" />
+                <Bot className="w-7 h-7" />
               </div>
               <span className="px-3 py-1 rounded-full bg-emerald-100/80 text-[#275D38] text-[11px] font-mono font-bold border border-emerald-300">
                 Interactive Engine
@@ -151,7 +151,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
                 </span>
               </div>
               <div className="flex items-start gap-2">
-                <Cpu className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <Bot className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <span className="font-sans text-xs">
                   <strong>Live Robot Construction:</strong> Watch the robot physically carry table frames and wire relational conduits.
                 </span>

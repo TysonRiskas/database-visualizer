@@ -23,7 +23,7 @@ import {
   Code2,
   ShieldAlert,
   Users,
-  Cpu,
+  Bot,
   Layers,
   Database,
 } from 'lucide-react';
@@ -51,6 +51,182 @@ interface RelationshipLink {
   fromAnchorId: string;
   toAnchorId: string;
 }
+
+/**
+ * Little Robot Avatar Component (Expressive 2D SVG Robot Character)
+ */
+const LittleRobotAvatar: React.FC<{
+  robot: WorkerRobotState;
+  isBlocked: boolean;
+  isHoldingKey: boolean;
+  isSuccess: boolean;
+  isSnapping: boolean;
+}> = ({ robot, isBlocked, isHoldingKey, isSuccess, isSnapping }) => {
+  const isScanning = robot.status === 'SCANNING';
+  const accentColor =
+    robot.accentHex ||
+    (robot.color === 'amber'
+      ? '#D97706'
+      : robot.color === 'purple'
+      ? '#9333EA'
+      : robot.color === 'blue'
+      ? '#2563EB'
+      : '#275D38');
+
+  return (
+    <div className="relative group cursor-pointer filter drop-shadow-xl select-none flex flex-col items-center">
+      {/* Contention / Blocked Aura */}
+      {isBlocked && (
+        <div className="absolute -inset-2 rounded-full border-2 border-dashed border-amber-400 animate-spin pointer-events-none" />
+      )}
+
+      {/* Write / Key Aura */}
+      {isHoldingKey && (
+        <div className="absolute -inset-2 rounded-full bg-amber-400/25 animate-pulse pointer-events-none" />
+      )}
+
+      {/* Success Aura */}
+      {isSuccess && (
+        <div className="absolute -inset-2 rounded-full bg-emerald-400/30 animate-pulse pointer-events-none" />
+      )}
+
+      <svg
+        width="48"
+        height="56"
+        viewBox="0 0 48 56"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        className={`transition-transform duration-200 group-hover:scale-110 ${
+          isBlocked ? 'animate-shake' : isHoldingKey ? 'animate-bounce' : ''
+        }`}
+      >
+        {/* Antenna Stem */}
+        <line x1="24" y1="13" x2="24" y2="4" stroke="#64748b" strokeWidth="2.5" strokeLinecap="round" />
+        {/* Antenna Bulb */}
+        <circle
+          cx="24"
+          cy="4"
+          r="3.5"
+          fill={isBlocked ? '#f59e0b' : isHoldingKey ? '#fbbf24' : isSuccess ? '#10b981' : '#38bdf8'}
+          stroke="#ffffff"
+          strokeWidth="1"
+          className={isBlocked ? 'animate-ping' : 'animate-pulse'}
+        />
+
+        {/* Ear Bolts */}
+        <rect x="5" y="18" width="3" height="8" rx="1.5" fill="#64748b" />
+        <rect x="40" y="18" width="3" height="8" rx="1.5" fill="#64748b" />
+
+        {/* Robot Head */}
+        <rect
+          x="7"
+          y="12"
+          width="34"
+          height="22"
+          rx="6"
+          fill="#1e293b"
+          stroke="#475569"
+          strokeWidth="2"
+        />
+
+        {/* Visor Screen */}
+        <rect
+          x="11"
+          y="15"
+          width="26"
+          height="14"
+          rx="3.5"
+          fill="#0f172a"
+          stroke="#334155"
+          strokeWidth="1"
+        />
+
+        {/* Expressive Robot Eyes */}
+        {isBlocked ? (
+          // Sweating / Blocked Eyes
+          <>
+            <circle cx="18" cy="22" r="2.5" fill="#f59e0b" />
+            <circle cx="30" cy="22" r="2.5" fill="#f59e0b" />
+            <path d="M16 18L20 20M32 18L28 20" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" />
+            <path d="M22 25Q24 23 26 25" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+          </>
+        ) : isHoldingKey ? (
+          // Key Finder Eyes (Sparkling Amber)
+          <>
+            <circle cx="18" cy="22" r="3" fill="#fbbf24" className="animate-pulse" />
+            <circle cx="30" cy="22" r="3" fill="#fbbf24" className="animate-pulse" />
+            <circle cx="19" cy="21" r="1" fill="#ffffff" />
+            <circle cx="31" cy="21" r="1" fill="#ffffff" />
+            <path d="M21 25Q24 27 27 25" stroke="#fbbf24" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+          </>
+        ) : isSuccess || isSnapping ? (
+          // Happy Eyes (Curved Smile Eyes)
+          <>
+            <path d="M15 22Q18 18 21 22" stroke="#34d399" strokeWidth="2" strokeLinecap="round" fill="none" />
+            <path d="M27 22Q30 18 33 22" stroke="#34d399" strokeWidth="2" strokeLinecap="round" fill="none" />
+            <path d="M21 25Q24 27 27 25" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+          </>
+        ) : isScanning ? (
+          // Laser Scanning Eyes
+          <>
+            <circle cx="18" cy="22" r="3" fill="#38bdf8" className="animate-ping" />
+            <circle cx="30" cy="22" r="3" fill="#38bdf8" className="animate-ping" />
+            <line x1="14" y1="22" x2="34" y2="22" stroke="#38bdf8" strokeWidth="1.5" strokeLinecap="round" opacity="0.7" />
+          </>
+        ) : (
+          // Default Friendly Glowing Eyes
+          <>
+            <circle cx="18" cy="22" r="2.5" fill="#38bdf8" />
+            <circle cx="30" cy="22" r="2.5" fill="#38bdf8" />
+            <circle cx="19" cy="21" r="0.8" fill="#ffffff" />
+            <circle cx="31" cy="21" r="0.8" fill="#ffffff" />
+          </>
+        )}
+
+        {/* Neck */}
+        <rect x="21" y="34" width="6" height="3" fill="#64748b" />
+
+        {/* Robot Torso / Body */}
+        <rect
+          x="10"
+          y="36"
+          width="28"
+          height="16"
+          rx="4"
+          fill={accentColor}
+          stroke="#ffffff"
+          strokeWidth="1.5"
+        />
+
+        {/* Chest Core Panel */}
+        <rect x="18" y="39" width="12" height="9" rx="2" fill="#0f172a" stroke="#475569" strokeWidth="1" />
+        <circle
+          cx="24"
+          cy="43.5"
+          r="2.5"
+          fill={isBlocked ? '#f59e0b' : isHoldingKey ? '#fbbf24' : isSuccess ? '#10b981' : '#38bdf8'}
+          className="animate-pulse"
+        />
+
+        {/* Arms */}
+        <rect x="5" y="38" width="4" height="11" rx="2" fill={accentColor} stroke="#ffffff" strokeWidth="1" />
+        <rect x="39" y="38" width="4" height="11" rx="2" fill={accentColor} stroke="#ffffff" strokeWidth="1" />
+      </svg>
+
+      {/* Floating Badges */}
+      {isBlocked && (
+        <div className="absolute -top-1.5 -right-1.5 p-1 bg-amber-500 text-white rounded-full shadow-md">
+          <Lock className="w-3 h-3" />
+        </div>
+      )}
+      {isHoldingKey && (
+        <div className="absolute -top-1.5 -right-1.5 p-1 bg-yellow-400 text-slate-950 rounded-full shadow-md animate-bounce">
+          <Key className="w-3 h-3 fill-current" />
+        </div>
+      )}
+    </div>
+  );
+};
 
 /**
  * Character-by-character typing animation component with human cadence (~115ms)
@@ -568,7 +744,7 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
               UVU Relational Database Internals Stage
             </h2>
             <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-[10px] font-mono text-slate-700">
-              <Users className="w-3 h-3 text-[#275D38]" />
+              <Bot className="w-3 h-3 text-[#275D38]" />
               <span>Left-Hand Staging Bay Active</span>
             </div>
           </div>
@@ -635,7 +811,7 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
         {/* DEDICATED LEFT-HAND WORKER ROBOT STAGING BAY */}
         <div className="w-full lg:w-44 xl:w-48 shrink-0 bg-slate-50 border border-slate-200 rounded-2xl p-3.5 flex flex-col gap-4 shadow-inner">
           <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
-            <Cpu className="w-4 h-4 text-[#275D38]" />
+            <Bot className="w-4 h-4 text-[#275D38]" />
             <div>
               <h3 className="text-xs font-bold text-[#275D38] font-sans">
                 Worker Staging Bay
@@ -646,10 +822,10 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
 
           {/* 3 VISUAL DOCKING PADS */}
           <div className="flex flex-row lg:flex-col justify-around lg:justify-between gap-3 flex-1 py-1">
-            {/* Dock 1: Alpha / Primary */}
+            {/* Dock 1: Wolverine / Alpha */}
             <div className="flex-1 rounded-xl border-2 border-dashed border-[#275D38]/40 bg-white/80 p-2.5 flex flex-col items-center justify-center gap-1 relative shadow-xs">
-              <div className="w-9 h-9 rounded-full border border-emerald-400 bg-emerald-50 flex items-center justify-center shadow-inner">
-                <div className="w-4 h-4 rounded-full bg-[#275D38] animate-pulse" />
+              <div className="w-9 h-9 rounded-xl border border-emerald-400 bg-emerald-50 flex items-center justify-center shadow-inner text-[#275D38]">
+                <Bot className="w-5 h-5 animate-pulse" />
               </div>
               <span className="text-[10px] font-mono font-bold text-[#275D38]">
                 Dock #1 (Alpha)
@@ -659,8 +835,8 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
 
             {/* Dock 2: Beta */}
             <div className="flex-1 rounded-xl border-2 border-dashed border-blue-300 bg-white/80 p-2.5 flex flex-col items-center justify-center gap-1 relative shadow-xs">
-              <div className="w-9 h-9 rounded-full border border-blue-400 bg-blue-50 flex items-center justify-center shadow-inner">
-                <div className="w-4 h-4 rounded-full bg-blue-600" />
+              <div className="w-9 h-9 rounded-xl border border-blue-400 bg-blue-50 flex items-center justify-center shadow-inner text-blue-600">
+                <Bot className="w-5 h-5" />
               </div>
               <span className="text-[10px] font-mono font-bold text-blue-900">
                 Dock #2 (Beta)
@@ -670,8 +846,8 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
 
             {/* Dock 3: Gamma */}
             <div className="flex-1 rounded-xl border-2 border-dashed border-purple-300 bg-white/80 p-2.5 flex flex-col items-center justify-center gap-1 relative shadow-xs">
-              <div className="w-9 h-9 rounded-full border border-purple-400 bg-purple-50 flex items-center justify-center shadow-inner">
-                <div className="w-4 h-4 rounded-full bg-purple-600" />
+              <div className="w-9 h-9 rounded-xl border border-purple-400 bg-purple-50 flex items-center justify-center shadow-inner text-purple-600">
+                <Bot className="w-5 h-5" />
               </div>
               <span className="text-[10px] font-mono font-bold text-purple-900">
                 Dock #3 (Gamma)
@@ -687,7 +863,7 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
           {isCompletelyBlank && (
             <div className="flex-1 flex flex-col items-center justify-center p-12 bg-slate-50/80 rounded-3xl border-2 border-dashed border-slate-300 min-h-[480px] text-center gap-4 relative overflow-hidden shadow-inner">
               <div className="p-4 rounded-3xl bg-emerald-50 text-[#275D38] border border-emerald-200 shadow-sm animate-pulse">
-                <Database className="w-10 h-10" />
+                <Bot className="w-10 h-10" />
               </div>
               <div className="max-w-md space-y-2">
                 <h3 className="font-bold text-base text-slate-800 font-sans flex items-center justify-center gap-2">
@@ -968,33 +1144,14 @@ export const StageCanvas: React.FC<StageCanvasProps> = ({
                 </div>
               )}
 
-              {/* PHYSICAL ROBOT AVATAR */}
-              <div
-                className={`relative w-12 h-12 rounded-2xl flex items-center justify-center shadow-2xl border-2 transition-all duration-300 ${
-                  isBlocked
-                    ? 'border-amber-500 ring-4 ring-amber-400/50 animate-shake'
-                    : isHoldingKey
-                    ? 'border-yellow-400 ring-4 ring-yellow-300/60 shadow-yellow-500/50'
-                    : isSuccess
-                    ? 'border-emerald-400 ring-4 ring-emerald-300/50'
-                    : 'border-white'
-                }`}
-                style={{
-                  backgroundColor: robot.accentHex || '#275D38',
-                }}
-              >
-                <Cpu className="w-6 h-6 text-white" />
-                {isBlocked && (
-                  <div className="absolute -top-1 -right-1 p-1 bg-amber-500 text-white rounded-full shadow">
-                    <Lock className="w-3 h-3" />
-                  </div>
-                )}
-                {isHoldingKey && (
-                  <div className="absolute -top-1 -right-1 p-1 bg-yellow-400 text-slate-950 rounded-full shadow animate-pulse">
-                    <Key className="w-3 h-3 fill-current" />
-                  </div>
-                )}
-              </div>
+              {/* PHYSICAL 2D LITTLE ROBOT AVATAR */}
+              <LittleRobotAvatar
+                robot={robot}
+                isBlocked={isBlocked}
+                isHoldingKey={isHoldingKey}
+                isSuccess={isSuccess}
+                isSnapping={isSnapping}
+              />
 
               {/* Robot Name & TxID Badge */}
               <div className="mt-1 px-2 py-0.5 rounded-full bg-slate-900/90 text-white text-[10px] font-mono font-semibold shadow flex items-center gap-1">

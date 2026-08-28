@@ -11,7 +11,7 @@ import {
   AlertTriangle,
   XCircle,
   RefreshCw,
-  Cpu,
+  Bot,
   ArrowRight,
   Info,
   Compass,
@@ -826,7 +826,7 @@ export const DatabaseBuilderPage: React.FC<DatabaseBuilderPageProps> = ({
             disabled={isSimulating}
             className="w-full py-3 px-4 rounded-2xl bg-[#275D38] hover:bg-[#1b4327] text-white font-bold text-xs shadow-lg shadow-emerald-900/15 flex items-center justify-center gap-2 transition disabled:opacity-50"
           >
-            <Cpu className="w-4 h-4 text-emerald-200" />
+            <Bot className="w-4 h-4 text-emerald-200" />
             <span>{actionButtonLabel}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
