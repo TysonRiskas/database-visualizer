@@ -16,6 +16,7 @@ import {
   Home,
   Layers,
   Bot,
+  Table,
 } from 'lucide-react';
 
 interface TopControlsBarProps {
@@ -25,8 +26,8 @@ interface TopControlsBarProps {
   onRunSql: (sql: string) => void;
   onOpenHelp: () => void;
   isSimulating: boolean;
-  viewMode?: 'welcome' | 'engine_room' | 'database_builder';
-  onViewModeChange?: (mode: 'welcome' | 'engine_room' | 'database_builder') => void;
+  viewMode?: 'welcome' | 'engine_room' | 'database_builder' | 'database_editor';
+  onViewModeChange?: (mode: 'welcome' | 'engine_room' | 'database_builder' | 'database_editor') => void;
 }
 
 const SAMPLE_QUERIES = [
@@ -167,6 +168,17 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
                 <span>🔬 Engine Room</span>
               </button>
               <button
+                onClick={() => onViewModeChange('database_editor')}
+                className={`px-3 py-1.5 rounded-xl font-bold text-xs transition flex items-center gap-1.5 ${
+                  viewMode === 'database_editor'
+                    ? 'bg-[#275D38] text-white shadow-md'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+              >
+                <Table className="w-3.5 h-3.5 text-emerald-200" />
+                <span>✏️ Edit Records</span>
+              </button>
+              <button
                 onClick={() => onViewModeChange('database_builder')}
                 className={`px-3 py-1.5 rounded-xl font-bold text-xs transition flex items-center gap-1.5 ${
                   viewMode === 'database_builder'
@@ -180,7 +192,7 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
             </div>
           )}
 
-          {/* Action Buttons: Different for Engine Room vs. Database Builder */}
+          {/* Action Buttons: Different for Engine Room vs. Database Editor vs. Database Builder */}
           {viewMode === 'engine_room' && (
             <div className="flex items-center gap-2 flex-wrap">
               {/* Quick Multi-Table Sign-up + Book */}
@@ -238,10 +250,28 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
             </div>
           )}
 
-          {viewMode === 'database_builder' && (
+          {viewMode === 'database_editor' && (
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 text-xs font-mono font-bold shadow-xs">
-                <Layers className="w-3.5 h-3.5 text-purple-600" />
+                <Table className="w-3.5 h-3.5 text-purple-600" />
+                <span>Record Editor (DML Studio - Isolated)</span>
+              </div>
+
+              {/* Theory Guide */}
+              <button
+                onClick={onOpenHelp}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium border border-slate-300 transition"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-slate-500" />
+                <span>Theory</span>
+              </button>
+            </div>
+          )}
+
+          {viewMode === 'database_builder' && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs font-mono font-bold shadow-xs">
+                <Layers className="w-3.5 h-3.5 text-blue-600" />
                 <span>Builder Studio (Isolated Canvas)</span>
               </div>
 

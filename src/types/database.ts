@@ -103,6 +103,8 @@ export type StepType =
   | 'STEP_ABORT_ROLLBACK'
   | 'STEP_ROLLBACK_COMPLETE'
   | 'STEP_CONSTRAINT_VIOLATION'
+  | 'STEP_ROW_UPDATE'
+  | 'STEP_ROW_DELETE'
   | 'STEP_COMPLETE';
 
 export interface WorkerRobotState {

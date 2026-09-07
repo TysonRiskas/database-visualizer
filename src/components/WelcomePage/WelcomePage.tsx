@@ -14,10 +14,11 @@ import {
   Zap,
   CheckCircle2,
   Users,
+  Table,
 } from 'lucide-react';
 
 interface WelcomePageProps {
-  onSelectMode: (mode: 'engine_room' | 'database_builder') => void;
+  onSelectMode: (mode: 'engine_room' | 'database_builder' | 'database_editor') => void;
   onOpenTheory: () => void;
 }
 
@@ -49,55 +50,53 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
         <div className="inline-flex items-center gap-2 p-2.5 px-4 rounded-2xl bg-slate-100/90 border border-slate-200 text-slate-700 text-xs shadow-xs">
           <Sparkles className="w-4 h-4 text-[#275D38] shrink-0" />
           <span>
-            <strong>Safe Learning Sandbox:</strong> Experiment freely with SQL queries, concurrency locks, and custom schemas with zero risk of breaking anything.
+            <strong>Safe Learning Sandbox:</strong> Experiment freely with SQL queries, concurrency locks, record mutations, and custom schemas with zero risk of breaking anything.
           </span>
         </div>
       </div>
 
-      {/* 2. TWO PRIMARY PATHWAYS (CARDS) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-5xl">
+      {/* 2. THREE PRIMARY PATHWAYS (CARDS) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full">
         {/* OPTION 1: ENGINE ROOM VISUALIZER */}
-        <div className="bg-white rounded-3xl border-2 border-slate-200 p-6 md:p-8 shadow-xl hover:shadow-2xl hover:border-emerald-500/60 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
-          {/* Top Accent Gradient */}
+        <div className="bg-white rounded-3xl border-2 border-slate-200 p-6 shadow-xl hover:shadow-2xl hover:border-emerald-500/60 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
           <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-[#275D38] to-emerald-400" />
 
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <div className="p-3.5 rounded-2xl bg-emerald-50 text-[#275D38] border border-emerald-200 shadow-sm group-hover:scale-110 transition duration-300">
-                <Bot className="w-7 h-7" />
+              <div className="p-3 rounded-2xl bg-emerald-50 text-[#275D38] border border-emerald-200 shadow-sm group-hover:scale-110 transition duration-300">
+                <Bot className="w-6 h-6" />
               </div>
-              <span className="px-3 py-1 rounded-full bg-emerald-100/80 text-[#275D38] text-[11px] font-mono font-bold border border-emerald-300">
+              <span className="px-2.5 py-1 rounded-full bg-emerald-100/80 text-[#275D38] text-[10px] font-mono font-bold border border-emerald-300">
                 Interactive Engine
               </span>
             </div>
 
             <div className="space-y-2">
-              <h2 className="text-xl font-bold text-slate-900 group-hover:text-[#275D38] transition">
-                1. Visualize How a Database Works
+              <h2 className="text-lg font-bold text-slate-900 group-hover:text-[#275D38] transition">
+                1. Engine Room Visualizer
               </h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Step inside the active Engine Room with a live relational schema. Watch worker robots execute SQL joins, acquire Strict 2PL locks, manage wait queues, and write to the Write-Ahead Log (WAL).
+                Step inside the active Engine Room with a live relational schema. Watch worker robots execute SQL joins, acquire Strict 2PL locks, and manage wait queues.
               </p>
             </div>
 
-            {/* Feature Highlights */}
-            <div className="space-y-2.5 pt-2 font-mono text-xs text-slate-700">
+            <div className="space-y-2 pt-1 font-mono text-xs text-slate-700">
               <div className="flex items-start gap-2">
-                <Key className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <span className="font-sans text-xs">
-                  <strong>FK ➔ PK Key Token Unlocking:</strong> See how Foreign Keys unlock parent rows during SQL Joins.
+                <Key className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>FK ➔ PK Key Token Unlocking:</strong> See how Foreign Keys unlock parent rows during Joins.
                 </span>
               </div>
               <div className="flex items-start gap-2">
-                <Lock className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span className="font-sans text-xs">
+                <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
                   <strong>Strict 2PL Concurrency:</strong> Observe exclusive padlocks and transaction wait queues.
                 </span>
               </div>
               <div className="flex items-start gap-2">
-                <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                <span className="font-sans text-xs">
-                  <strong>Interactive ACID Demos:</strong> Trigger rollbacks, constraint checks, and WAL durability flushes.
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Interactive ACID Demos:</strong> Trigger rollbacks, constraint checks, and WAL flushes.
                 </span>
               </div>
             </div>
@@ -105,55 +104,107 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
 
           <button
             onClick={() => onSelectMode('engine_room')}
-            className="w-full py-3.5 px-5 rounded-2xl bg-[#275D38] hover:bg-[#1c4529] text-white font-bold text-xs shadow-lg shadow-emerald-900/15 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
+            className="w-full py-3 px-4 rounded-2xl bg-[#275D38] hover:bg-[#1c4529] text-white font-bold text-xs shadow-lg shadow-emerald-900/15 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
           >
-            <span>🔬 Enter Engine Room Visualizer</span>
+            <span>🔬 Enter Engine Room</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>
 
-        {/* OPTION 2: BUILD YOUR OWN DATABASE */}
-        <div className="bg-white rounded-3xl border-2 border-slate-200 p-6 md:p-8 shadow-xl hover:shadow-2xl hover:border-purple-500/60 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
-          {/* Top Accent Gradient */}
+        {/* OPTION 2: EDIT & MANIPULATE RECORDS (NEW) */}
+        <div className="bg-white rounded-3xl border-2 border-slate-200 p-6 shadow-xl hover:shadow-2xl hover:border-purple-500/60 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
           <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-purple-600 to-indigo-500" />
 
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <div className="p-3.5 rounded-2xl bg-purple-50 text-purple-700 border border-purple-200 shadow-sm group-hover:scale-110 transition duration-300">
-                <Database className="w-7 h-7" />
+              <div className="p-3 rounded-2xl bg-purple-50 text-purple-700 border border-purple-200 shadow-sm group-hover:scale-110 transition duration-300">
+                <Table className="w-6 h-6" />
               </div>
-              <span className="px-3 py-1 rounded-full bg-purple-100/80 text-purple-900 text-[11px] font-mono font-bold border border-purple-300">
+              <span className="px-2.5 py-1 rounded-full bg-purple-100/80 text-purple-900 text-[10px] font-mono font-bold border border-purple-300">
+                DML Studio
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-lg font-bold text-slate-900 group-hover:text-purple-700 transition">
+                2. Edit Database Records
+              </h2>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Add (<code className="font-mono text-purple-700 font-bold">INSERT</code>), modify (<code className="font-mono text-purple-700 font-bold">UPDATE</code>), and remove (<code className="font-mono text-purple-700 font-bold">DELETE</code>) records with guided instructions or visual forms.
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-1 font-mono text-xs text-slate-700">
+              <div className="flex items-start gap-2">
+                <Compass className="w-3.5 h-3.5 text-purple-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Guided Step-by-Step DML:</strong> Learn tuple insertion, in-place updates, and deletion tombstones.
+                </span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Zap className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Interactive Visual Form:</strong> Click to add, edit, or delete with real-time 1:1 SQL generation.
+                </span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Bot className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Live Little Robot Execution:</strong> Watch the robot acquire Exclusive Padlocks and log WAL records.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => onSelectMode('database_editor')}
+            className="w-full py-3 px-4 rounded-2xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-lg shadow-purple-900/15 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
+          >
+            <span>✏️ Enter Record Editor</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* OPTION 3: BUILD YOUR OWN DATABASE */}
+        <div className="bg-white rounded-3xl border-2 border-slate-200 p-6 shadow-xl hover:shadow-2xl hover:border-blue-500/60 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
+          <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-blue-600 to-indigo-500" />
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="p-3 rounded-2xl bg-blue-50 text-blue-700 border border-blue-200 shadow-sm group-hover:scale-110 transition duration-300">
+                <Database className="w-6 h-6" />
+              </div>
+              <span className="px-2.5 py-1 rounded-full bg-blue-100/80 text-blue-900 text-[10px] font-mono font-bold border border-blue-300">
                 Architect Studio
               </span>
             </div>
 
             <div className="space-y-2">
-              <h2 className="text-xl font-bold text-slate-900 group-hover:text-purple-700 transition">
-                2. Build Your Own Database
+              <h2 className="text-lg font-bold text-slate-900 group-hover:text-blue-700 transition">
+                3. Build Your Own Database
               </h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Take the architect's seat! Follow a guided step-by-step SQL tutorial or write custom DDL statements on a clean canvas, and watch the Wolverine Architect Robot assemble your tables physically.
+                Take the architect's seat! Follow a guided SQL tutorial or write custom DDL on a clean canvas, and watch the Wolverine Architect Robot assemble tables physically.
               </p>
             </div>
 
-            {/* Feature Highlights */}
-            <div className="space-y-2.5 pt-2 font-mono text-xs text-slate-700">
+            <div className="space-y-2 pt-1 font-mono text-xs text-slate-700">
               <div className="flex items-start gap-2">
-                <Compass className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
-                <span className="font-sans text-xs">
-                  <strong>Granular SQL Training:</strong> Learn <code className="bg-slate-100 px-1 rounded text-purple-700 font-mono">CREATE TABLE</code>, Primary Keys, and Data Types with zero prefilled answers.
+                <Compass className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Granular DDL Training:</strong> Learn <code className="bg-slate-100 px-1 rounded text-blue-700 font-mono">CREATE TABLE</code>, Primary Keys, and Data Types.
                 </span>
               </div>
               <div className="flex items-start gap-2">
-                <Layers className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-                <span className="font-sans text-xs">
-                  <strong>Custom Table Freedom:</strong> Build any entity you want (Courses, Products, Dogs, Doctors) with live syntax validation.
+                <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Custom Table Freedom:</strong> Build any entity you want (Courses, Products, Dogs, Doctors).
                 </span>
               </div>
               <div className="flex items-start gap-2">
-                <Bot className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <span className="font-sans text-xs">
-                  <strong>Live Robot Construction:</strong> Watch the robot physically carry table frames and wire relational conduits.
+                <Bot className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>Live Robot Construction:</strong> Watch the robot carry table frames and wire relational conduits.
                 </span>
               </div>
             </div>
@@ -161,9 +212,9 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
 
           <button
             onClick={() => onSelectMode('database_builder')}
-            className="w-full py-3.5 px-5 rounded-2xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-lg shadow-purple-900/15 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
+            className="w-full py-3 px-4 rounded-2xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs shadow-lg shadow-blue-900/15 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
           >
-            <span>🏗️ Start Building Your Database</span>
+            <span>🏗️ Build Your Database</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>

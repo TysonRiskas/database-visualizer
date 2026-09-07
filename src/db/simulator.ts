@@ -3050,4 +3050,1152 @@ export class SimulationGenerator {
 
     return { steps, finalState: state };
   }
+
+  /**
+   * Generates step-by-step physical visualizer animation steps for Data Manipulation Language (DML):
+   * INSERT (Add records), UPDATE (Edit records), DELETE (Delete records).
+   */
+  public static generateDmlSteps(
+    initialState: DatabaseState,
+    dmlSql: string
+  ): { steps: SimulationStep[]; finalState: DatabaseState } {
+    const steps: SimulationStep[] = [];
+    const state = JSON.parse(JSON.stringify(initialState)) as DatabaseState;
+    const lockMgr = new LockManager();
+    const txId = `Tx-DML-${Math.floor(100 + Math.random() * 900)}`;
+    const threadName = 'Wolverine Agent';
+    const threadColor = 'blue' as const;
+    const threadHex = '#275D38';
+    let currentLsn = 1000 + Math.floor(Math.random() * 500);
+
+    const parseResult = SqlParser.parse(dmlSql);
+    const ast = parseResult.ast;
+
+    // Handle SELECT if user ran a query inside editor
+    if (ast.type === 'SELECT') {
+      const { steps: querySteps } = SimulationGenerator.generateSqlQuerySteps(initialState, dmlSql);
+      return { steps: querySteps, finalState: state };
+    }
+
+    if (parseResult.error || ast.type === 'UNKNOWN') {
+      steps.push({
+        stepIndex: 0,
+        totalSteps: 1,
+        type: 'STEP_CONSTRAINT_VIOLATION',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: '⚠️ SQL Syntax / Execution Error',
+        actionSummary: parseResult.error || 'Syntax error in SQL statement. Expected INSERT, UPDATE, or DELETE statement.',
+        pedagogicalDetail: 'Syntax Validation: Relational engines parse and validate SQL grammar before transaction scheduling.',
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'IDLE',
+            x: 6,
+            y: 22,
+            speech: `Syntax Error: ${parseResult.error || 'Please verify your SQL statement.'}`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+      return { steps, finalState: state };
+    }
+
+    const targetTableName = Object.keys(state).find((k) => k.toLowerCase() === ast.table.toLowerCase()) || ast.table;
+    const targetTable = state[targetTableName];
+
+    if (!targetTable) {
+      steps.push({
+        stepIndex: 0,
+        totalSteps: 1,
+        type: 'STEP_CONSTRAINT_VIOLATION',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `⚠️ Target Table Not Found: '${ast.table}'`,
+        actionSummary: `Cannot execute ${ast.type}: Table '${ast.table}' does not exist in the database.`,
+        pedagogicalDetail: 'Catalog Lookup: Database catalog (pg_class/information_schema) did not find the specified table relation.',
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'IDLE',
+            x: 6,
+            y: 22,
+            speech: `Table '${ast.table}' does not exist in this database!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+      return { steps, finalState: state };
+    }
+
+    // Coordinates for table on stage
+    const tableX = 45;
+    const tableY = 40;
+
+    // =========================================================================
+    // 1. INSERT OPERATION (ADDING A RECORD)
+    // =========================================================================
+    if (ast.type === 'INSERT') {
+      const insertVals = ast.insertValues || {};
+      const rowPayload: Record<string, any> = {};
+      const valEntries = Object.entries(insertVals);
+
+      targetTable.schema.columns.forEach((col, cIdx) => {
+        if (insertVals[col.name] !== undefined) {
+          rowPayload[col.name] = insertVals[col.name];
+        } else if (valEntries[cIdx] !== undefined) {
+          rowPayload[col.name] = valEntries[cIdx][1];
+        }
+      });
+      Object.assign(rowPayload, insertVals);
+
+      const pkName = targetTable.schema.primaryKey;
+      const pkVal = rowPayload[pkName];
+
+      // A. Primary Key Uniqueness Check
+      if (pkName && pkVal !== undefined) {
+        const isDuplicatePk = targetTable.rows.some((r) => String(r[pkName]) === String(pkVal));
+        if (isDuplicatePk) {
+          steps.push({
+            stepIndex: 0,
+            totalSteps: 1,
+            type: 'STEP_CONSTRAINT_VIOLATION',
+            txId,
+            threadId: 't1',
+            threadName,
+            threadColor,
+            title: `⛔ Duplicate Primary Key Error: '${pkVal}'`,
+            actionSummary: `Primary Key Violation: Key (${pkName}=${pkVal}) already exists in table '${targetTableName}'. Primary keys MUST be unique!`,
+            pedagogicalDetail: `Unique Constraint: Relational engines enforce B-tree index uniqueness on primary keys. Inserting a duplicate key triggers a fatal abort.`,
+            timestamp: SimulationGenerator.getTimestamp(),
+            targetTable: targetTableName,
+            activeSqlString: dmlSql,
+            sqlClauseHighlight: 'INSERT',
+            workerStatesSnapshot: [
+              {
+                id: 't1',
+                name: threadName,
+                color: threadColor,
+                accentHex: threadHex,
+                txId,
+                status: 'IDLE',
+                x: 6,
+                y: 22,
+                speech: `⛔ Primary Key Conflict! ${pkName} #${pkVal} already exists in '${targetTableName}'!`,
+              },
+            ],
+            tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+            activeLocksSnapshot: lockMgr.getActiveLocks(),
+            waitingLocksSnapshot: lockMgr.getWaitQueue(),
+          });
+          return { steps, finalState: state };
+        }
+      }
+
+      // B. Foreign Key Referential Integrity Check
+      for (const col of targetTable.schema.columns) {
+        if (col.isForeignKey && col.foreignKeyTarget) {
+          const fkVal = rowPayload[col.name];
+          if (fkVal !== undefined && fkVal !== null && fkVal !== '') {
+            const refTableName = Object.keys(state).find((k) => k.toLowerCase() === col.foreignKeyTarget!.table.toLowerCase()) || col.foreignKeyTarget.table;
+            const refTable = state[refTableName];
+            if (refTable) {
+              const parentRowExists = refTable.rows.some(
+                (r) => String(r[col.foreignKeyTarget!.column]) === String(fkVal)
+              );
+              if (!parentRowExists) {
+                steps.push({
+                  stepIndex: 0,
+                  totalSteps: 1,
+                  type: 'STEP_CONSTRAINT_VIOLATION',
+                  txId,
+                  threadId: 't1',
+                  threadName,
+                  threadColor,
+                  title: `⛔ Foreign Key Referential Integrity Error`,
+                  actionSummary: `Foreign Key Violation: Key (${col.name}=${fkVal}) is not present in parent table '${refTableName}.${col.foreignKeyTarget.column}'. Orphan records are rejected!`,
+                  pedagogicalDetail: `Referential Integrity: Foreign keys ensure that child rows cannot point to non-existent parent records.`,
+                  timestamp: SimulationGenerator.getTimestamp(),
+                  targetTable: targetTableName,
+                  activeSqlString: dmlSql,
+                  sqlClauseHighlight: 'INSERT',
+                  workerStatesSnapshot: [
+                    {
+                      id: 't1',
+                      name: threadName,
+                      color: threadColor,
+                      accentHex: threadHex,
+                      txId,
+                      status: 'IDLE',
+                      x: 6,
+                      y: 22,
+                      speech: `⛔ FK Error: Parent record #${fkVal} does not exist in '${refTableName}'!`,
+                    },
+                  ],
+                  tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+                  activeLocksSnapshot: lockMgr.getActiveLocks(),
+                  waitingLocksSnapshot: lockMgr.getWaitQueue(),
+                });
+                return { steps, finalState: state };
+              }
+            }
+          }
+        }
+      }
+
+      const totalSteps = 6;
+      let stepCounter = 1;
+
+      // Step 1: Pick up payload card at Dock #1
+      steps.push({
+        stepIndex: 0,
+        totalSteps,
+        type: 'STEP_PICKUP_PAYLOAD',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 1: Picked Up New Tuple Payload Card at Dock #1`,
+        actionSummary: `Robot picked up new row payload for '${targetTableName}'. Preparing insertion transaction.`,
+        pedagogicalDetail: `Write Transaction Initialized: The engine buffers the incoming row data and begins the 2PL locking growing phase.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'INSERT',
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'HOLDING_CARD',
+            x: 6,
+            y: 22,
+            speech: `Preparing to insert new tuple into '${targetTableName}': ${JSON.stringify(rowPayload)}`,
+            carryingCard: {
+              title: `New ${targetTableName} Record`,
+              details: rowPayload,
+            },
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 2: Acquire Exclusive (X) Padlock & Allocate Ghost Slot
+      lockMgr.requestLock({
+        txId,
+        threadName,
+        threadColor,
+        table: targetTableName,
+        rowId: pkVal !== undefined ? pkVal : 'new_slot',
+        mode: 'EXCLUSIVE',
+      });
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_PLACE_PADLOCK',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 2: Acquired Exclusive (X) Padlock on '${targetTableName}'`,
+        actionSummary: `Acquired Exclusive Padlock to reserve new tuple slot. Other concurrent transactions are isolated.`,
+        pedagogicalDetail: `Strict 2PL Growing Phase: Exclusive locks guarantee no phantom reads or write-write conflicts during insertion.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        targetRowId: pkVal,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'INSERT',
+        ghostSlot: {
+          table: targetTableName,
+          rowId: pkVal !== undefined ? pkVal : 'new_slot',
+          rowData: rowPayload,
+          isSnapped: false,
+        },
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SNAPPING_ROW',
+            x: tableX,
+            y: tableY,
+            speech: `Exclusive lock placed on '${targetTableName}'! Allocating memory block...`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 3: Append WAL Log Record
+      currentLsn++;
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_WAL_APPEND',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 3: Appended LSN #${currentLsn} to Write-Ahead Log (WAL)`,
+        actionSummary: `Persisted INSERT record to WAL buffer before modifying live memory page.`,
+        pedagogicalDetail: `Write-Ahead Logging Protocol: The transaction's changes MUST be flushed to persistent WAL before in-memory page writes are exposed.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'VALUES',
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'WRITING_WAL',
+            x: tableX,
+            y: tableY,
+            speech: `📝 Logged LSN #${currentLsn}: INSERT into '${targetTableName}'!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 4: Materialize tuple into table page buffer (with character typing animation)
+      targetTable.rows.push(rowPayload);
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_SNAP_PAYLOAD',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 4: Tuple Materialized into '${targetTableName}' Page Buffer`,
+        actionSummary: `New row materialized in table memory buffer: ${JSON.stringify(rowPayload)}. Character typing animation active!`,
+        pedagogicalDetail: `Buffer Pool Modification: The dirty memory page is updated with the new record attributes.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        targetRowId: pkVal,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'VALUES',
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'INSERTING',
+            x: tableX,
+            y: tableY,
+            speech: `Snapping new row into '${targetTableName}' page buffer!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 5: Commit & Release Padlock
+      lockMgr.releaseLocksForTx(txId);
+      currentLsn++;
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_RELEASE_PADLOCK',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 5: Committed LSN #${currentLsn} & Released Padlock`,
+        actionSummary: `Transaction committed! Released Exclusive Lock on '${targetTableName}'. Row is permanently accessible.`,
+        pedagogicalDetail: `Strict 2PL Shrinking Phase: All Exclusive locks are held until commit time, ensuring serializability and avoiding cascading rollbacks.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'COMMIT',
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'COMMITTING',
+            x: tableX,
+            y: tableY,
+            speech: `Transaction committed! Released padlock on '${targetTableName}'.`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 6: Complete & Return to Left Dock #1
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_COMPLETE',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 6: Insertion Complete & Returned to Left Dock #1`,
+        actionSummary: `Record successfully inserted! Total rows in '${targetTableName}': ${targetTable.rows.length}. Wolverine Agent docked.`,
+        pedagogicalDetail: `DML Operation Complete: Record is durable and fully queryable.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SUCCESS',
+            x: 6,
+            y: 22,
+            speech: `🎉 INSERT complete! New record successfully added to '${targetTableName}'. Returned to Dock #1 ✔`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      return { steps, finalState: state };
+    }
+
+    // =========================================================================
+    // 2. UPDATE OPERATION (EDITING RECORDS)
+    // =========================================================================
+    if (ast.type === 'UPDATE') {
+      const updateVals = ast.updateValues || {};
+      const whereClause = ast.whereClause;
+
+      // Function to test WHERE predicate on a row
+      const testRow = (row: RowData): boolean => {
+        if (!whereClause) return true; // No WHERE clause updates all rows!
+        const colVal = row[whereClause.column] !== undefined
+          ? row[whereClause.column]
+          : Object.entries(row).find(([k]) => k.toLowerCase() === whereClause.column.toLowerCase())?.[1];
+
+        const targetVal = whereClause.value;
+        const op = whereClause.operator;
+
+        let condPassed = false;
+        if (op === '=') condPassed = String(colVal).toLowerCase() === String(targetVal).toLowerCase();
+        else if (op === '!=') condPassed = String(colVal).toLowerCase() !== String(targetVal).toLowerCase();
+        else if (op === '>') condPassed = Number(colVal) > Number(targetVal);
+        else if (op === '<') condPassed = Number(colVal) < Number(targetVal);
+        else if (op === '>=') condPassed = Number(colVal) >= Number(targetVal);
+        else if (op === '<=') condPassed = Number(colVal) <= Number(targetVal);
+        else if (op === 'LIKE') condPassed = String(colVal).toLowerCase().includes(String(targetVal).replace(/%/g, '').toLowerCase());
+
+        if (whereClause.andWhere) {
+          const andCol = whereClause.andWhere.column;
+          const andVal = whereClause.andWhere.value;
+          const andOp = whereClause.andWhere.operator;
+          const actualAndColVal = row[andCol];
+          let andPassed = false;
+          if (andOp === '=') andPassed = String(actualAndColVal).toLowerCase() === String(andVal).toLowerCase();
+          else if (andOp === '!=') andPassed = String(actualAndColVal).toLowerCase() !== String(andVal).toLowerCase();
+          return condPassed && andPassed;
+        }
+
+        return condPassed;
+      };
+
+      const matchingIndices: number[] = [];
+      targetTable.rows.forEach((row, idx) => {
+        if (testRow(row)) matchingIndices.push(idx);
+      });
+
+      const totalSteps = 6;
+      let stepCounter = 1;
+
+      // Step 1: Pick up UPDATE directive at Dock #1
+      steps.push({
+        stepIndex: 0,
+        totalSteps,
+        type: 'STEP_PICKUP_PAYLOAD',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 1: Picked Up UPDATE Directive Card at Dock #1`,
+        actionSummary: `Robot picked up UPDATE instruction for '${targetTableName}' with changes: ${JSON.stringify(updateVals)}. Predicate: [${ast.rawQuery.split(/where/i)[1]?.trim() || 'ALL ROWS'}].`,
+        pedagogicalDetail: `Update Plan Generation: The engine compiles column assignments and prepares sequential scan with row-level locks.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'UPDATE',
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'HOLDING_CARD',
+            x: 6,
+            y: 22,
+            speech: `UPDATE '${targetTableName}' SET ${Object.entries(updateVals).map(([k, v]) => `${k}='${v}'`).join(', ')}...`,
+            carryingCard: {
+              title: `UPDATE ${targetTableName}`,
+              details: updateVals,
+            },
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 2: Sequential Table Scan to Evaluate WHERE Predicate
+      const evaluatedRowStatuses = targetTable.rows.map((r, idx) => ({
+        table: targetTableName,
+        rowIndex: idx,
+        rowId: r[targetTable.schema.primaryKey],
+        status: matchingIndices.includes(idx) ? ('MATCH' as const) : ('FILTERED' as const),
+      }));
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_SCAN_ROW',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 2: Evaluated WHERE Predicate (${matchingIndices.length} matched row${matchingIndices.length === 1 ? '' : 's'})`,
+        actionSummary: `Scanned all ${targetTable.rows.length} rows in '${targetTableName}'. Identified ${matchingIndices.length} row(s) satisfying the filter predicate.`,
+        pedagogicalDetail: `Predicate Evaluation: Unmatched rows are filtered out (marked with strikethrough); matching rows receive Exclusive locks.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'WHERE',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SCANNING',
+            x: tableX,
+            y: tableY,
+            speech: `Scanned table: ${matchingIndices.length} row(s) matched the WHERE clause!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // If 0 rows matched, exit cleanly
+      if (matchingIndices.length === 0) {
+        steps.push({
+          stepIndex: stepCounter++,
+          totalSteps,
+          type: 'STEP_COMPLETE',
+          txId,
+          threadId: 't1',
+          threadName,
+          threadColor,
+          title: `Step 3: 0 Rows Matched (No Mutations)`,
+          actionSummary: `Filter predicate did not match any records in '${targetTableName}'. 0 rows updated.`,
+          pedagogicalDetail: `Zero Row Impact: When a WHERE predicate finds no matching tuples, no rows are mutated and no locks are held.`,
+          timestamp: SimulationGenerator.getTimestamp(),
+          activeSqlString: dmlSql,
+          workerStatesSnapshot: [
+            {
+              id: 't1',
+              name: threadName,
+              color: threadColor,
+              accentHex: threadHex,
+              txId,
+              status: 'SUCCESS',
+              x: 6,
+              y: 22,
+              speech: `0 rows matched the condition. No changes made to '${targetTableName}'. Returned to Dock #1 ✔`,
+            },
+          ],
+          tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+          activeLocksSnapshot: lockMgr.getActiveLocks(),
+          waitingLocksSnapshot: lockMgr.getWaitQueue(),
+        });
+        return { steps, finalState: state };
+      }
+
+      // Step 3: Place Exclusive (X) Padlock on Matching Rows
+      matchingIndices.forEach((mIdx) => {
+        const row = targetTable.rows[mIdx];
+        const rPk = row[targetTable.schema.primaryKey] !== undefined ? row[targetTable.schema.primaryKey] : mIdx;
+        lockMgr.requestLock({
+          txId,
+          threadName,
+          threadColor,
+          table: targetTableName,
+          rowId: rPk,
+          mode: 'EXCLUSIVE',
+        });
+      });
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_PLACE_PADLOCK',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 3: Acquired Exclusive (X) Padlock on Matched Row(s)`,
+        actionSummary: `Acquired Exclusive PADLOCK on ${matchingIndices.length} target row(s) before performing in-place update.`,
+        pedagogicalDetail: `Row-Level Lock Acquisition: Only target rows are locked in 2PL; non-matching rows remain accessible for read operations.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'SET',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SNAPPING_ROW',
+            x: tableX,
+            y: tableY,
+            speech: `Locked target record(s) with Exclusive Padlock!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 4: Write Before-Image and After-Image to WAL Buffer
+      currentLsn++;
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_WAL_APPEND',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 4: Appended LSN #${currentLsn} (Before/After Image) to WAL`,
+        actionSummary: `Preserved before-image and after-image in Write-Ahead Log to support crash rollback or point-in-time recovery.`,
+        pedagogicalDetail: `WAL Physiological Logging: Recording both the old state and new state guarantees transaction atomicity (UNDOs) and durability (REDOs).`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'SET',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'WRITING_WAL',
+            x: tableX,
+            y: tableY,
+            speech: `📝 Logged LSN #${currentLsn}: Before-image and after-image recorded in WAL!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 5: Perform in-place Mutation on Matched Rows
+      matchingIndices.forEach((mIdx) => {
+        const row = targetTable.rows[mIdx];
+        Object.entries(updateVals).forEach(([k, v]) => {
+          const matchedKey = Object.keys(row).find((rk) => rk.toLowerCase() === k.toLowerCase()) || k;
+          row[matchedKey] = v;
+        });
+      });
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_ROW_UPDATE',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 5: Updated Values In-Place in '${targetTableName}'`,
+        actionSummary: `Mutated attributes in memory page buffer: ${Object.entries(updateVals).map(([k, v]) => `${k}='${v}'`).join(', ')}. Character typing active!`,
+        pedagogicalDetail: `In-Place Page Mutation: The page is marked 'dirty' in the Buffer Pool and will be asynchronously flushed to data storage.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'SET',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'INSERTING',
+            x: tableX,
+            y: tableY,
+            speech: `Overwriting attributes in-place on target records!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 6: Commit Transaction & Release Locks
+      lockMgr.releaseLocksForTx(txId);
+      currentLsn++;
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_COMPLETE',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 6: Committed LSN #${currentLsn} & Returned to Left Dock #1`,
+        actionSummary: `Transaction committed! Released Exclusive locks on '${targetTableName}'. Updated ${matchingIndices.length} record(s).`,
+        pedagogicalDetail: `Strict 2PL Shrinking Complete: Locks released upon commit; modified values are live and durable.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SUCCESS',
+            x: 6,
+            y: 22,
+            speech: `🎉 UPDATE complete! Modified ${matchingIndices.length} record(s) in '${targetTableName}'. Returned to Dock #1 ✔`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      return { steps, finalState: state };
+    }
+
+    // =========================================================================
+    // 3. DELETE OPERATION (REMOVING RECORDS)
+    // =========================================================================
+    if (ast.type === 'DELETE') {
+      const whereClause = ast.whereClause;
+
+      // Function to test WHERE predicate on a row
+      const testRow = (row: RowData): boolean => {
+        if (!whereClause) return true; // No WHERE clause deletes all rows!
+        const colVal = row[whereClause.column] !== undefined
+          ? row[whereClause.column]
+          : Object.entries(row).find(([k]) => k.toLowerCase() === whereClause.column.toLowerCase())?.[1];
+
+        const targetVal = whereClause.value;
+        const op = whereClause.operator;
+
+        let condPassed = false;
+        if (op === '=') condPassed = String(colVal).toLowerCase() === String(targetVal).toLowerCase();
+        else if (op === '!=') condPassed = String(colVal).toLowerCase() !== String(targetVal).toLowerCase();
+        else if (op === '>') condPassed = Number(colVal) > Number(targetVal);
+        else if (op === '<') condPassed = Number(colVal) < Number(targetVal);
+        else if (op === '>=') condPassed = Number(colVal) >= Number(targetVal);
+        else if (op === '<=') condPassed = Number(colVal) <= Number(targetVal);
+        else if (op === 'LIKE') condPassed = String(colVal).toLowerCase().includes(String(targetVal).replace(/%/g, '').toLowerCase());
+
+        return condPassed;
+      };
+
+      const matchingIndices: number[] = [];
+      targetTable.rows.forEach((row, idx) => {
+        if (testRow(row)) matchingIndices.push(idx);
+      });
+
+      // A. Foreign Key Referential Integrity Safeguard Check
+      // Verify no child table references the row(s) about to be deleted!
+      const pkName = targetTable.schema.primaryKey;
+      if (pkName) {
+        for (const [childTableName, childTable] of Object.entries(state)) {
+          if (childTableName.toLowerCase() === targetTableName.toLowerCase()) continue;
+          for (const col of childTable.schema.columns) {
+            if (col.isForeignKey && col.foreignKeyTarget && col.foreignKeyTarget.table.toLowerCase() === targetTableName.toLowerCase()) {
+              for (const mIdx of matchingIndices) {
+                const parentRow = targetTable.rows[mIdx];
+                const parentPkVal = parentRow[pkName];
+                const hasReferencingChild = childTable.rows.some(
+                  (cr) => String(cr[col.name]) === String(parentPkVal)
+                );
+                if (hasReferencingChild) {
+                  steps.push({
+                    stepIndex: 0,
+                    totalSteps: 1,
+                    type: 'STEP_CONSTRAINT_VIOLATION',
+                    txId,
+                    threadId: 't1',
+                    threadName,
+                    threadColor,
+                    title: `⛔ Foreign Key Constraint Violation on DELETE`,
+                    actionSummary: `Cannot delete row (${pkName}=${parentPkVal}) from '${targetTableName}' because it is referenced by foreign key in child table '${childTableName}'. Referential integrity prevents orphaned child rows!`,
+                    pedagogicalDetail: `Referential Integrity: ON DELETE RESTRICT (default SQL behavior) prevents deleting parent rows when active dependent records exist in child tables.`,
+                    timestamp: SimulationGenerator.getTimestamp(),
+                    targetTable: targetTableName,
+                    activeSqlString: dmlSql,
+                    sqlClauseHighlight: 'DELETE',
+                    workerStatesSnapshot: [
+                      {
+                        id: 't1',
+                        name: threadName,
+                        color: threadColor,
+                        accentHex: threadHex,
+                        txId,
+                        status: 'IDLE',
+                        x: 6,
+                        y: 22,
+                        speech: `⛔ Cannot delete ${pkName} #${parentPkVal}: Active records in '${childTableName}' depend on it!`,
+                      },
+                    ],
+                    tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+                    activeLocksSnapshot: lockMgr.getActiveLocks(),
+                    waitingLocksSnapshot: lockMgr.getWaitQueue(),
+                  });
+                  return { steps, finalState: state };
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const totalSteps = 6;
+      let stepCounter = 1;
+
+      // Step 1: Pick up Deletion Tombstone directive at Dock #1
+      steps.push({
+        stepIndex: 0,
+        totalSteps,
+        type: 'STEP_PICKUP_PAYLOAD',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 1: Picked Up Deletion Directive at Dock #1`,
+        actionSummary: `Robot prepared deletion tombstone directive for '${targetTableName}'. Evaluating predicate: [${ast.rawQuery.split(/where/i)[1]?.trim() || 'ALL ROWS'}].`,
+        pedagogicalDetail: `Delete Transaction Initialized: Preparing row identification and referential integrity verification.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'DELETE',
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'HOLDING_CARD',
+            x: 6,
+            y: 22,
+            speech: `Preparing DELETE operation on '${targetTableName}'...`,
+            carryingCard: {
+              title: `DELETE from ${targetTableName}`,
+              details: { predicate: ast.rawQuery.split(/where/i)[1]?.trim() || 'ALL ROWS' },
+            },
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 2: Table Scan to evaluate WHERE predicate
+      const evaluatedRowStatuses = targetTable.rows.map((r, idx) => ({
+        table: targetTableName,
+        rowIndex: idx,
+        rowId: r[targetTable.schema.primaryKey],
+        status: matchingIndices.includes(idx) ? ('MATCH' as const) : ('FILTERED' as const),
+      }));
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_SCAN_ROW',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 2: Evaluated WHERE Predicate (${matchingIndices.length} targeted row${matchingIndices.length === 1 ? '' : 's'})`,
+        actionSummary: `Scanned all ${targetTable.rows.length} rows in '${targetTableName}'. Identified ${matchingIndices.length} row(s) to be removed.`,
+        pedagogicalDetail: `Row Identification: Database evaluates WHERE condition to pinpoint target slot offsets.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'WHERE',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SCANNING',
+            x: tableX,
+            y: tableY,
+            speech: `Target row(s) identified for removal: ${matchingIndices.length} row(s) matched.`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      if (matchingIndices.length === 0) {
+        steps.push({
+          stepIndex: stepCounter++,
+          totalSteps,
+          type: 'STEP_COMPLETE',
+          txId,
+          threadId: 't1',
+          threadName,
+          threadColor,
+          title: `Step 3: 0 Rows Matched (No Deletions)`,
+          actionSummary: `Filter predicate did not match any records in '${targetTableName}'. 0 rows removed.`,
+          pedagogicalDetail: `Zero Row Impact: When a WHERE predicate finds no matching tuples, no rows are deleted and no locks are held.`,
+          timestamp: SimulationGenerator.getTimestamp(),
+          activeSqlString: dmlSql,
+          workerStatesSnapshot: [
+            {
+              id: 't1',
+              name: threadName,
+              color: threadColor,
+              accentHex: threadHex,
+              txId,
+              status: 'SUCCESS',
+              x: 6,
+              y: 22,
+              speech: `0 rows matched the condition. No records deleted from '${targetTableName}'. Returned to Dock #1 ✔`,
+            },
+          ],
+          tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+          activeLocksSnapshot: lockMgr.getActiveLocks(),
+          waitingLocksSnapshot: lockMgr.getWaitQueue(),
+        });
+        return { steps, finalState: state };
+      }
+
+      // Step 3: Place Exclusive (X) Padlock on Target Rows
+      matchingIndices.forEach((mIdx) => {
+        const row = targetTable.rows[mIdx];
+        const rPk = row[targetTable.schema.primaryKey] !== undefined ? row[targetTable.schema.primaryKey] : mIdx;
+        lockMgr.requestLock({
+          txId,
+          threadName,
+          threadColor,
+          table: targetTableName,
+          rowId: rPk,
+          mode: 'EXCLUSIVE',
+        });
+      });
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_PLACE_PADLOCK',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 3: Acquired Exclusive (X) Padlock on Target Row(s)`,
+        actionSummary: `Acquired Exclusive PADLOCK on target row(s) in '${targetTableName}' to prevent concurrent access during deletion.`,
+        pedagogicalDetail: `Strict 2PL Exclusive Lock: Prevents other transactions from reading or mutating the row while deletion is pending.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'DELETE',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SNAPPING_ROW',
+            x: tableX,
+            y: tableY,
+            speech: `Locked target record(s) with Exclusive Padlock!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 4: Write Tombstone Delete Record to WAL Buffer
+      currentLsn++;
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_WAL_APPEND',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 4: Appended LSN #${currentLsn} (Tombstone Record) to WAL`,
+        actionSummary: `Appended tombstone deletion record to Write-Ahead Log. Preserves audit trail and crash recovery ability.`,
+        pedagogicalDetail: `WAL Tombstone Record: Deleting a record generates an explicit log record containing the full deleted tuple so it can be un-deleted during a rollback.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'DELETE',
+        evaluatedRowStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'WRITING_WAL',
+            x: tableX,
+            y: tableY,
+            speech: `📝 Logged LSN #${currentLsn}: Tombstone delete record logged to WAL!`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 5: Animate Strike-Through & Remove Row from Table Rows
+      // Show strike-through first
+      const strikeThroughStatuses = targetTable.rows.map((r, idx) => ({
+        table: targetTableName,
+        rowIndex: idx,
+        rowId: r[targetTable.schema.primaryKey],
+        status: matchingIndices.includes(idx) ? ('FILTERED' as const) : ('MATCH' as const),
+      }));
+
+      // Filter out matched rows
+      targetTable.rows = targetTable.rows.filter((_, idx) => !matchingIndices.includes(idx));
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_ROW_DELETE',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 5: Removed Record(s) from '${targetTableName}' Memory Page`,
+        actionSummary: `Removed ${matchingIndices.length} record(s) from live table buffer. Remaining rows in '${targetTableName}': ${targetTable.rows.length}.`,
+        pedagogicalDetail: `Tuple Deletion: The row slot is reclaimed or marked dead for vacuuming / page reorganization.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        targetTable: targetTableName,
+        activeSqlString: dmlSql,
+        sqlClauseHighlight: 'DELETE',
+        evaluatedRowStatuses: strikeThroughStatuses,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'INSERTING',
+            x: tableX,
+            y: tableY,
+            speech: `Row slot reclaimed! ${matchingIndices.length} record(s) deleted from '${targetTableName}'.`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      // Step 6: Commit Transaction & Release Locks
+      lockMgr.releaseLocksForTx(txId);
+      currentLsn++;
+
+      steps.push({
+        stepIndex: stepCounter++,
+        totalSteps,
+        type: 'STEP_COMPLETE',
+        txId,
+        threadId: 't1',
+        threadName,
+        threadColor,
+        title: `Step 6: Committed LSN #${currentLsn} & Returned to Left Dock #1`,
+        actionSummary: `Transaction committed! Released Exclusive locks on '${targetTableName}'. Deleted ${matchingIndices.length} record(s).`,
+        pedagogicalDetail: `Strict 2PL Shrinking Phase: All Exclusive locks released. Remaining tuples are fully accessible.`,
+        timestamp: SimulationGenerator.getTimestamp(),
+        activeSqlString: dmlSql,
+        workerStatesSnapshot: [
+          {
+            id: 't1',
+            name: threadName,
+            color: threadColor,
+            accentHex: threadHex,
+            txId,
+            status: 'SUCCESS',
+            x: 6,
+            y: 22,
+            speech: `🎉 DELETE complete! Removed ${matchingIndices.length} record(s) from '${targetTableName}'. Returned to Dock #1 ✔`,
+          },
+        ],
+        tableStateSnapshot: JSON.parse(JSON.stringify(state)),
+        activeLocksSnapshot: lockMgr.getActiveLocks(),
+        waitingLocksSnapshot: lockMgr.getWaitQueue(),
+      });
+
+      return { steps, finalState: state };
+    }
+
+    return { steps, finalState: state };
+  }
 }

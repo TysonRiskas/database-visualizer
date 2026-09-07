@@ -17,6 +17,7 @@ import { StageCanvas } from './components/EngineRoom/StageCanvas';
 import { EducationalModal } from './components/EducationalModal';
 import { AcidSidebar, AcidProperty } from './components/AcidSidebar';
 import { DatabaseBuilderPage } from './components/DatabaseBuilder/DatabaseBuilderPage';
+import { DatabaseEditorPage } from './components/DatabaseEditor/DatabaseEditorPage';
 import { WelcomePage } from './components/WelcomePage/WelcomePage';
 
 const INITIAL_ROBOTS: WorkerRobotState[] = [
@@ -50,13 +51,13 @@ interface RoomEnvironmentState {
 export const App: React.FC = () => {
   const engineRef = useRef<DatabaseEngine>(new DatabaseEngine());
 
-  // View Mode: Welcome Overview vs. Engine Room Visualizer vs. Build Your Own Database
-  const [viewMode, setViewMode] = useState<'welcome' | 'engine_room' | 'database_builder'>('welcome');
+  // View Mode: Welcome Overview vs. Engine Room Visualizer vs. Record Editor vs. Build Your Own Database
+  const [viewMode, setViewMode] = useState<'welcome' | 'engine_room' | 'database_builder' | 'database_editor'>('welcome');
 
   // Theory Modal
   const [isEducationalModalOpen, setIsEducationalModalOpen] = useState<boolean>(false);
 
-  // 1. ENGINE ROOM ENVIRONMENT (Initialized with UVU Tutoring DB: Students, Tutors, Sessions)
+  // 1. ENGINE ROOM ENVIRONMENT (UVU Tutoring DB: Students, Tutors, Sessions)
   const [engineEnv, setEngineEnv] = useState<RoomEnvironmentState>(() => ({
     databaseState: engineRef.current.getState(),
     activeLocks: [],
@@ -74,9 +75,24 @@ export const App: React.FC = () => {
   // Active ACID Concept for Engine Room
   const [activeAcidProperty, setActiveAcidProperty] = useState<AcidProperty | undefined>();
 
-  // 2. BUILDER ROOM ENVIRONMENT (Initialized completely blank: {})
+  // 2. BUILDER ROOM ENVIRONMENT (Starts completely blank: {})
   const [builderEnv, setBuilderEnv] = useState<RoomEnvironmentState>(() => ({
     databaseState: {},
+    activeLocks: [],
+    waitingLocks: [],
+    walRecords: [],
+    extractedTrayRows: [],
+    queryResult: undefined,
+    workerRobots: INITIAL_ROBOTS,
+    simulationSteps: [],
+    currentStepIndex: -1,
+    isPlaying: false,
+    speed: 0.5,
+  }));
+
+  // 3. RECORD EDITOR ENVIRONMENT (Isolated dataset ready for INSERT, UPDATE, DELETE)
+  const [editorEnv, setEditorEnv] = useState<RoomEnvironmentState>(() => ({
+    databaseState: JSON.parse(JSON.stringify(engineRef.current.getState())),
     activeLocks: [],
     waitingLocks: [],
     walRecords: [],
@@ -110,6 +126,24 @@ export const App: React.FC = () => {
   // Helper to apply step snapshot to Builder Environment
   const applyBuilderStep = (step: SimulationStep, nextIndex: number, totalCount: number) => {
     setBuilderEnv((prev) => {
+      const next: RoomEnvironmentState = {
+        ...prev,
+        currentStepIndex: nextIndex,
+        isPlaying: nextIndex < totalCount - 1,
+      };
+      if (step.tableStateSnapshot) next.databaseState = step.tableStateSnapshot;
+      if (step.activeLocksSnapshot) next.activeLocks = step.activeLocksSnapshot;
+      if (step.waitingLocksSnapshot) next.waitingLocks = step.waitingLocksSnapshot;
+      if (step.workerStatesSnapshot) next.workerRobots = step.workerStatesSnapshot;
+      if (step.extractedTrayRows !== undefined) next.extractedTrayRows = step.extractedTrayRows;
+      if (step.queryResultSnapshot) next.queryResult = step.queryResultSnapshot;
+      return next;
+    });
+  };
+
+  // Helper to apply step snapshot to Editor Environment
+  const applyEditorStep = (step: SimulationStep, nextIndex: number, totalCount: number) => {
+    setEditorEnv((prev) => {
       const next: RoomEnvironmentState = {
         ...prev,
         currentStepIndex: nextIndex,
@@ -160,6 +194,24 @@ export const App: React.FC = () => {
     }
     return () => clearTimeout(timer);
   }, [builderEnv.isPlaying, builderEnv.simulationSteps, builderEnv.currentStepIndex, builderEnv.speed]);
+
+  // Editor Room Timer Loop
+  useEffect(() => {
+    let timer: any;
+    if (
+      editorEnv.isPlaying &&
+      editorEnv.simulationSteps.length > 0 &&
+      editorEnv.currentStepIndex >= 0 &&
+      editorEnv.currentStepIndex < editorEnv.simulationSteps.length - 1
+    ) {
+      const delay = Math.round(2000 / editorEnv.speed);
+      timer = setTimeout(() => {
+        const nextIndex = editorEnv.currentStepIndex + 1;
+        applyEditorStep(editorEnv.simulationSteps[nextIndex], nextIndex, editorEnv.simulationSteps.length);
+      }, delay);
+    }
+    return () => clearTimeout(timer);
+  }, [editorEnv.isPlaying, editorEnv.simulationSteps, editorEnv.currentStepIndex, editorEnv.speed]);
 
   // ===================== ENGINE ROOM ACTIONS =====================
   const startEngineSimulation = (steps: SimulationStep[]) => {
@@ -332,10 +384,78 @@ export const App: React.FC = () => {
     });
   };
 
+  // ===================== RECORD EDITOR ROOM ACTIONS =====================
+  const startEditorSimulation = (steps: SimulationStep[]) => {
+    if (steps.length === 0) return;
+    const firstStep = steps[0];
+    setEditorEnv((prev) => {
+      const next: RoomEnvironmentState = {
+        ...prev,
+        simulationSteps: steps,
+        currentStepIndex: 0,
+        isPlaying: steps.length > 1,
+      };
+      if (firstStep.tableStateSnapshot) next.databaseState = firstStep.tableStateSnapshot;
+      if (firstStep.activeLocksSnapshot) next.activeLocks = firstStep.activeLocksSnapshot;
+      if (firstStep.waitingLocksSnapshot) next.waitingLocks = firstStep.waitingLocksSnapshot;
+      if (firstStep.workerStatesSnapshot) next.workerRobots = firstStep.workerStatesSnapshot;
+      if (firstStep.extractedTrayRows !== undefined) next.extractedTrayRows = firstStep.extractedTrayRows;
+      if (firstStep.queryResultSnapshot) next.queryResult = firstStep.queryResultSnapshot;
+      return next;
+    });
+  };
+
+  const handleEditorRunDml = (dmlScript: string) => {
+    const { steps } = SimulationGenerator.generateDmlSteps(editorEnv.databaseState, dmlScript);
+    startEditorSimulation(steps);
+  };
+
+  const handleEditorNextStep = () => {
+    if (editorEnv.currentStepIndex < editorEnv.simulationSteps.length - 1) {
+      const nextIndex = editorEnv.currentStepIndex + 1;
+      applyEditorStep(editorEnv.simulationSteps[nextIndex], nextIndex, editorEnv.simulationSteps.length);
+    }
+  };
+
+  const handleEditorTogglePlayPause = () => {
+    setEditorEnv((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+  };
+
+  const handleEditorResetSimulation = () => {
+    setEditorEnv((prev) => ({
+      ...prev,
+      simulationSteps: [],
+      currentStepIndex: -1,
+      isPlaying: false,
+      activeLocks: [],
+      waitingLocks: [],
+      extractedTrayRows: [],
+      workerRobots: INITIAL_ROBOTS,
+    }));
+  };
+
+  const handleEditorResetDatabase = () => {
+    setEditorEnv({
+      databaseState: JSON.parse(JSON.stringify(new DatabaseEngine().getState())),
+      activeLocks: [],
+      waitingLocks: [],
+      walRecords: [],
+      extractedTrayRows: [],
+      queryResult: undefined,
+      workerRobots: INITIAL_ROBOTS,
+      simulationSteps: [],
+      currentStepIndex: -1,
+      isPlaying: false,
+      speed: 0.5,
+    });
+  };
+
   const isEngineSimulating =
     engineEnv.simulationSteps.length > 0 && engineEnv.currentStepIndex < engineEnv.simulationSteps.length - 1;
   const isBuilderSimulating =
     builderEnv.simulationSteps.length > 0 && builderEnv.currentStepIndex < builderEnv.simulationSteps.length - 1;
+  const isEditorSimulating =
+    editorEnv.simulationSteps.length > 0 && editorEnv.currentStepIndex < editorEnv.simulationSteps.length - 1;
 
   const currentEngineStep =
     engineEnv.currentStepIndex >= 0 && engineEnv.currentStepIndex < engineEnv.simulationSteps.length
@@ -347,6 +467,11 @@ export const App: React.FC = () => {
       ? builderEnv.simulationSteps[builderEnv.currentStepIndex]
       : undefined;
 
+  const currentEditorStep =
+    editorEnv.currentStepIndex >= 0 && editorEnv.currentStepIndex < editorEnv.simulationSteps.length
+      ? editorEnv.simulationSteps[editorEnv.currentStepIndex]
+      : undefined;
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-[#275D38] selection:text-white">
       {/* 1. TOP BAR: UVU Header Controls & Action Modals */}
@@ -356,7 +481,13 @@ export const App: React.FC = () => {
         onFireConcurrent={handleFireConcurrent}
         onRunSql={handleRunSql}
         onOpenHelp={() => setIsEducationalModalOpen(true)}
-        isSimulating={viewMode === 'database_builder' ? isBuilderSimulating : isEngineSimulating}
+        isSimulating={
+          viewMode === 'database_builder'
+            ? isBuilderSimulating
+            : viewMode === 'database_editor'
+            ? isEditorSimulating
+            : isEngineSimulating
+        }
         viewMode={viewMode}
         onViewModeChange={setViewMode}
       />
@@ -367,6 +498,26 @@ export const App: React.FC = () => {
           <WelcomePage
             onSelectMode={(mode) => setViewMode(mode)}
             onOpenTheory={() => setIsEducationalModalOpen(true)}
+          />
+        ) : viewMode === 'database_editor' ? (
+          <DatabaseEditorPage
+            databaseState={editorEnv.databaseState}
+            onRunDml={handleEditorRunDml}
+            isSimulating={isEditorSimulating}
+            activeLocks={editorEnv.activeLocks}
+            currentStep={currentEditorStep}
+            workerRobots={editorEnv.workerRobots}
+            extractedTrayRows={editorEnv.extractedTrayRows}
+            speed={editorEnv.speed}
+            setSpeed={(s) => setEditorEnv((prev) => ({ ...prev, speed: s }))}
+            isPlaying={editorEnv.isPlaying}
+            onTogglePlayPause={handleEditorTogglePlayPause}
+            onNextStep={handleEditorNextStep}
+            onResetSimulation={handleEditorResetSimulation}
+            onResetDatabase={handleEditorResetDatabase}
+            currentStepIndex={editorEnv.currentStepIndex}
+            totalStepsCount={editorEnv.simulationSteps.length}
+            onOpenHelp={() => setIsEducationalModalOpen(true)}
           />
         ) : viewMode === 'database_builder' ? (
           <DatabaseBuilderPage
