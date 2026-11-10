@@ -20,6 +20,31 @@ export interface PlaygroundExecutionResult {
 
 export class PlaygroundEngine {
   /**
+   * Safe column value accessor that resolves case-insensitively across:
+   * 1. Exact match ('Sessions.status' or 'status')
+   * 2. Unprefixed bare match ('status' from 'Sessions.status')
+   * 3. Table-qualified match ('Sessions.status' from 'status')
+   */
+  public static getColValue(row: RowData, colIdentifier: string): any {
+    if (!colIdentifier) return undefined;
+    if (row[colIdentifier] !== undefined) return row[colIdentifier];
+
+    const bare = colIdentifier.includes('.') ? colIdentifier.split('.').pop()! : colIdentifier;
+    if (row[bare] !== undefined) return row[bare];
+
+    const entry = Object.entries(row).find(([k]) => {
+      const kLower = k.toLowerCase();
+      const colLower = colIdentifier.toLowerCase();
+      const bareLower = bare.toLowerCase();
+      const kBare = k.includes('.') ? k.split('.').pop()!.toLowerCase() : kLower;
+
+      return kLower === colLower || kLower === bareLower || kBare === bareLower;
+    });
+
+    return entry ? entry[1] : undefined;
+  }
+
+  /**
    * Evaluates a SELECT query against database tables and registered views.
    */
   public static executeSelect(
@@ -29,6 +54,17 @@ export class PlaygroundEngine {
   ): { result?: QueryResult; error?: string } {
     const startTime = performance.now();
     const primaryName = ast.table;
+
+    // Helper to tag rows with table name prefix for multi-table ambiguity resolution
+    const tagRowWithTable = (row: RowData, tableName: string): RowData => {
+      const tagged: RowData = { ...row };
+      for (const [k, v] of Object.entries(row)) {
+        if (!k.includes('.')) {
+          tagged[`${tableName}.${k}`] = v;
+        }
+      }
+      return tagged;
+    };
 
     // Check if table is a base table or a view
     let baseRows: RowData[] = [];
@@ -43,7 +79,7 @@ export class PlaygroundEngine {
 
     if (matchedTableKey) {
       const table = databaseState[matchedTableKey];
-      baseRows = table.rows.map((r) => ({ ...r }));
+      baseRows = table.rows.map((r) => tagRowWithTable(r, matchedTableKey));
       baseColumns = table.schema.columns.map((c) => c.name);
     } else if (matchedViewKey) {
       // Dynamically evaluate view query
@@ -56,7 +92,7 @@ export class PlaygroundEngine {
       if (viewExec.error || !viewExec.result) {
         return { error: viewExec.error || `Failed to evaluate view '${view.name}'.` };
       }
-      baseRows = viewExec.result.rows;
+      baseRows = viewExec.result.rows.map((r) => tagRowWithTable(r, view.name));
       baseColumns = viewExec.result.columns;
     } else {
       return { error: `Relation '${primaryName}' does not exist in tables or views.` };
@@ -85,12 +121,14 @@ export class PlaygroundEngine {
       );
 
       if (joinTableKey) {
-        targetRows = databaseState[joinTableKey].rows;
+        targetRows = databaseState[joinTableKey].rows.map((r) => tagRowWithTable(r, joinTableKey));
       } else if (joinViewKey) {
         const view = views[joinViewKey];
         const vp = SqlParser.parse(view.definitionQuery);
         const ve = PlaygroundEngine.executeSelect(databaseState, views, vp.ast);
-        if (ve.result) targetRows = ve.result.rows;
+        if (ve.result) {
+          targetRows = ve.result.rows.map((r) => tagRowWithTable(r, view.name));
+        }
       } else {
         return { error: `JOIN target '${targetRelName}' does not exist.` };
       }
@@ -99,20 +137,10 @@ export class PlaygroundEngine {
       const nextJoined: RowData[] = [];
 
       for (const leftRow of joinedRows) {
-        const leftVal =
-          leftRow[join.sourceColumn] !== undefined
-            ? leftRow[join.sourceColumn]
-            : Object.entries(leftRow).find(
-                ([k]) => k.toLowerCase() === join.sourceColumn.toLowerCase()
-              )?.[1];
+        const leftVal = PlaygroundEngine.getColValue(leftRow, join.sourceColumn);
 
         const matches = targetRows.filter((rightRow) => {
-          const rightVal =
-            rightRow[join.targetColumn] !== undefined
-              ? rightRow[join.targetColumn]
-              : Object.entries(rightRow).find(
-                  ([k]) => k.toLowerCase() === join.targetColumn.toLowerCase()
-                )?.[1];
+          const rightVal = PlaygroundEngine.getColValue(rightRow, join.targetColumn);
           return String(leftVal) === String(rightVal);
         });
 
@@ -133,10 +161,7 @@ export class PlaygroundEngine {
     if (ast.whereClause) {
       const wc = ast.whereClause;
       filteredRows = joinedRows.filter((row) => {
-        const colVal =
-          row[wc.column] !== undefined
-            ? row[wc.column]
-            : Object.entries(row).find(([k]) => k.toLowerCase() === wc.column.toLowerCase())?.[1];
+        const colVal = PlaygroundEngine.getColValue(row, wc.column);
 
         const targetVal = wc.value;
         const op = wc.operator;
@@ -154,13 +179,9 @@ export class PlaygroundEngine {
         }
 
         if (wc.andWhere) {
-          const andCol = wc.andWhere.column;
-          const andVal = wc.andWhere.value;
           const andOp = wc.andWhere.operator;
-          const actualAndVal =
-            row[andCol] !== undefined
-              ? row[andCol]
-              : Object.entries(row).find(([k]) => k.toLowerCase() === andCol.toLowerCase())?.[1];
+          const andVal = wc.andWhere.value;
+          const actualAndVal = PlaygroundEngine.getColValue(row, wc.andWhere.column);
 
           let andPassed = false;
           if (andOp === '=') andPassed = String(actualAndVal).toLowerCase() === String(andVal).toLowerCase();
@@ -176,28 +197,52 @@ export class PlaygroundEngine {
       });
     }
 
-    // Projection / Column Selection
+    // Projection / Column Selection (supports "col AS alias" and "Table.col AS alias")
     const isSelectAll = ast.columns.includes('*') || ast.columns.some((c) => c.trim() === '*');
     let outputColumns: string[] = [];
+    let projectedRows: RowData[] = [];
+
+    const parseColumnProjection = (colStr: string): { source: string; alias: string } => {
+      const trimmed = colStr.trim();
+      const asMatch = trimmed.match(/^([\s\S]+?)\s+AS\s+([a-zA-Z0-9_]+)$/i);
+      if (asMatch) {
+        return { source: asMatch[1].trim(), alias: asMatch[2].trim() };
+      }
+      const spaceMatch = trimmed.match(/^([a-zA-Z0-9_.]+)\s+([a-zA-Z0-9_]+)$/);
+      if (spaceMatch) {
+        return { source: spaceMatch[1].trim(), alias: spaceMatch[2].trim() };
+      }
+      const bare = trimmed.includes('.') ? trimmed.split('.').pop()! : trimmed;
+      return { source: trimmed, alias: bare.trim() };
+    };
 
     if (isSelectAll) {
       const colSet = new Set<string>();
-      filteredRows.forEach((r) => Object.keys(r).forEach((k) => colSet.add(k)));
+      filteredRows.forEach((r) => {
+        Object.keys(r).forEach((k) => {
+          if (!k.includes('.')) colSet.add(k);
+        });
+      });
       if (colSet.size === 0) baseColumns.forEach((c) => colSet.add(c));
       outputColumns = Array.from(colSet);
-    } else {
-      outputColumns = ast.columns.map((c) => c.split('.').pop()?.trim() || c.trim());
-    }
-
-    const projectedRows = filteredRows.map((row) => {
-      if (isSelectAll) return { ...row };
-      const out: RowData = {};
-      outputColumns.forEach((col) => {
-        const matched = Object.entries(row).find(([k]) => k.toLowerCase() === col.toLowerCase());
-        out[col] = matched ? matched[1] : null;
+      projectedRows = filteredRows.map((row) => {
+        const out: RowData = {};
+        outputColumns.forEach((col) => {
+          out[col] = PlaygroundEngine.getColValue(row, col);
+        });
+        return out;
       });
-      return out;
-    });
+    } else {
+      const parsedProjections = ast.columns.map(parseColumnProjection);
+      outputColumns = parsedProjections.map((p) => p.alias);
+      projectedRows = filteredRows.map((row) => {
+        const out: RowData = {};
+        parsedProjections.forEach((proj) => {
+          out[proj.alias] = PlaygroundEngine.getColValue(row, proj.source);
+        });
+        return out;
+      });
+    }
 
     const executionTimeMs = Math.max(1, Math.round(performance.now() - startTime));
 
@@ -286,6 +331,11 @@ export class PlaygroundEngine {
 
           messages.push(`✅ View '${viewName}' created successfully.`);
           messages.push(`   Attributes: [${columns.join(', ')}]`);
+
+          if (testExec.result) {
+            results.push(testExec.result);
+            messages.push(`📊 Loaded preview of ${testExec.result.rows.length} row(s) from View '${viewName}'. (Query it anytime with: SELECT * FROM ${viewName};)`);
+          }
         }
 
         // 2. DROP VIEW

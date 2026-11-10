@@ -425,13 +425,39 @@ export const SqlPlaygroundPage: React.FC<SqlPlaygroundPageProps> = ({
                           <Eye className="w-3 h-3" />
                           <span>{vName}</span>
                         </button>
-                        <button
-                          onClick={() => handleInsertSql(`SELECT * FROM ${vName};`)}
-                          className="opacity-0 group-hover:opacity-100 text-[9px] px-1.5 py-0.5 rounded bg-[#007acc] text-white transition"
-                          title={`Query View: SELECT * FROM ${vName}`}
-                        >
-                          SELECT
-                        </button>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                          <button
+                            onClick={() => {
+                              const sql = `SELECT * FROM ${vName};`;
+                              setEditorSql(sql);
+                              setIsExecuting(true);
+                              setTimeout(() => {
+                                const outcome = PlaygroundEngine.executeScript(playgroundState, sql);
+                                onUpdatePlaygroundState(outcome.state);
+                                setExecutionResult({
+                                  results: outcome.results,
+                                  messages: outcome.messages,
+                                  hasErrors: outcome.hasErrors,
+                                  totalDurationMs: outcome.totalDurationMs,
+                                });
+                                setActiveTab(outcome.results.length > 0 ? 'results' : 'messages');
+                                setIsExecuting(false);
+                              }, 50);
+                            }}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-[#275d38] hover:bg-[#1b4327] text-white flex items-center gap-0.5"
+                            title={`Run immediately: SELECT * FROM ${vName}`}
+                          >
+                            <Play className="w-2.5 h-2.5 fill-current" />
+                            <span>Run</span>
+                          </button>
+                          <button
+                            onClick={() => handleInsertSql(`SELECT * FROM ${vName};`)}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-[#007acc] hover:bg-[#0062a3] text-white"
+                            title={`Insert SQL: SELECT * FROM ${vName}`}
+                          >
+                            Insert
+                          </button>
+                        </div>
                       </div>
                     );
                   })
