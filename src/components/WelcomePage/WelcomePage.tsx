@@ -15,10 +15,11 @@ import {
   CheckCircle2,
   Users,
   Table,
+  Code2,
 } from 'lucide-react';
 
 interface WelcomePageProps {
-  onSelectMode: (mode: 'engine_room' | 'database_builder' | 'database_editor') => void;
+  onSelectMode: (mode: 'engine_room' | 'database_builder' | 'database_editor' | 'sql_playground') => void;
   onOpenTheory: () => void;
 }
 
@@ -55,8 +56,8 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
         </div>
       </div>
 
-      {/* 2. THREE PRIMARY PATHWAYS (CARDS) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full">
+      {/* 2. FOUR PRIMARY PATHWAYS (CARDS) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
         {/* OPTION 1: ENGINE ROOM VISUALIZER */}
         <div className="bg-white rounded-3xl border-2 border-slate-200 p-6 shadow-xl hover:shadow-2xl hover:border-emerald-500/60 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
           <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-[#275D38] to-emerald-400" />
@@ -215,6 +216,60 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
             className="w-full py-3 px-4 rounded-2xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs shadow-lg shadow-blue-900/15 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
           >
             <span>🏗️ Build Your Database</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* OPTION 4: INTERACTIVE SQL PLAYGROUND (VS CODE STUDIO) */}
+        <div className="bg-[#1e1e1e] text-[#cccccc] rounded-3xl border-2 border-slate-700 p-6 shadow-xl hover:shadow-2xl hover:border-sky-500/80 transition-all duration-300 flex flex-col justify-between gap-6 relative overflow-hidden group">
+          <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-400" />
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="p-3 rounded-2xl bg-[#252526] text-sky-400 border border-[#3c3c3c] shadow-sm group-hover:scale-110 transition duration-300">
+                <Code2 className="w-6 h-6" />
+              </div>
+              <span className="px-2.5 py-1 rounded-full bg-sky-950 text-sky-400 text-[10px] font-mono font-bold border border-sky-800">
+                VS Code Studio
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-lg font-bold text-white group-hover:text-sky-400 transition">
+                4. SQL Playground
+              </h2>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                VS Code IDE interface for advanced SQL. Create reusable <code className="font-mono text-sky-400 font-bold">VIEWS</code> and parameterized <code className="font-mono text-sky-400 font-bold">STORED PROCEDURES</code> on a live database.
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-1 font-mono text-xs text-slate-300">
+              <div className="flex items-start gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>CREATE & DROP VIEW:</strong> Virtual tables dynamically resolved against live tables and joins.
+                </span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>PROCEDURES & CALL:</strong> Procedural batches with parameters, <code className="bg-[#2d2d2d] px-1 rounded text-sky-300 font-mono">BEGIN...END</code>, and execution.
+                </span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Layers className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span className="font-sans text-[11px]">
+                  <strong>VS Code Architecture:</strong> Left Explorer tree, multi-line editor, tabular results, and query history.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => onSelectMode('sql_playground')}
+            className="w-full py-3 px-4 rounded-2xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shadow-lg shadow-sky-900/30 flex items-center justify-center gap-2 group-hover:gap-3 transition-all"
+          >
+            <span>💻 Enter SQL Playground</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>

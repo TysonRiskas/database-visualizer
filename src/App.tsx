@@ -3,6 +3,7 @@ import {
   DatabaseState,
   LockEntry,
   LockWaitQueueEntry,
+  PlaygroundState,
   QueryResult,
   RowData,
   SimulationStep,
@@ -19,6 +20,7 @@ import { AcidSidebar, AcidProperty } from './components/AcidSidebar';
 import { DatabaseBuilderPage } from './components/DatabaseBuilder/DatabaseBuilderPage';
 import { DatabaseEditorPage } from './components/DatabaseEditor/DatabaseEditorPage';
 import { WelcomePage } from './components/WelcomePage/WelcomePage';
+import { SqlPlaygroundPage } from './components/SqlPlayground/SqlPlaygroundPage';
 
 const INITIAL_ROBOTS: WorkerRobotState[] = [
   {
@@ -51,8 +53,8 @@ interface RoomEnvironmentState {
 export const App: React.FC = () => {
   const engineRef = useRef<DatabaseEngine>(new DatabaseEngine());
 
-  // View Mode: Welcome Overview vs. Engine Room Visualizer vs. Record Editor vs. Build Your Own Database
-  const [viewMode, setViewMode] = useState<'welcome' | 'engine_room' | 'database_builder' | 'database_editor'>('welcome');
+  // View Mode: Welcome Overview vs. Engine Room Visualizer vs. Record Editor vs. Build Your Own Database vs. SQL Playground
+  const [viewMode, setViewMode] = useState<'welcome' | 'engine_room' | 'database_builder' | 'database_editor' | 'sql_playground'>('welcome');
 
   // Theory Modal
   const [isEducationalModalOpen, setIsEducationalModalOpen] = useState<boolean>(false);
@@ -104,6 +106,23 @@ export const App: React.FC = () => {
     isPlaying: false,
     speed: 0.5,
   }));
+
+  // 4. SQL PLAYGROUND ENVIRONMENT (Isolated state for views, procedures, queries)
+  const [playgroundEnv, setPlaygroundEnv] = useState<PlaygroundState>(() => ({
+    databaseState: JSON.parse(JSON.stringify(engineRef.current.getState())),
+    views: {},
+    procedures: {},
+    queryHistory: [],
+  }));
+
+  const handleResetPlaygroundDatabase = () => {
+    setPlaygroundEnv({
+      databaseState: JSON.parse(JSON.stringify(engineRef.current.getState())),
+      views: {},
+      procedures: {},
+      queryHistory: [],
+    });
+  };
 
   // Helper to apply step snapshot to Engine Environment
   const applyEngineStep = (step: SimulationStep, nextIndex: number, totalCount: number) => {
@@ -498,6 +517,13 @@ export const App: React.FC = () => {
           <WelcomePage
             onSelectMode={(mode) => setViewMode(mode)}
             onOpenTheory={() => setIsEducationalModalOpen(true)}
+          />
+        ) : viewMode === 'sql_playground' ? (
+          <SqlPlaygroundPage
+            playgroundState={playgroundEnv}
+            onUpdatePlaygroundState={setPlaygroundEnv}
+            onResetDatabase={handleResetPlaygroundDatabase}
+            onOpenHelp={() => setIsEducationalModalOpen(true)}
           />
         ) : viewMode === 'database_editor' ? (
           <DatabaseEditorPage

@@ -4,6 +4,7 @@ import {
   ColumnDefinition,
   RelationshipCardinality,
   DataType,
+  StoredProcedureParameter,
 } from '../types/database';
 
 export class SqlParser {
@@ -48,8 +49,20 @@ export class SqlParser {
 
     if (upper.startsWith('SELECT')) {
       return SqlParser.parseSelect(cleaned);
+    } else if (/^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW/i.test(upper)) {
+      return SqlParser.parseCreateView(cleaned);
+    } else if (/^CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|PROC)/i.test(upper)) {
+      return SqlParser.parseCreateProcedure(cleaned);
     } else if (upper.startsWith('CREATE')) {
       return SqlParser.parseCreateTable(cleaned);
+    } else if (/^DROP\s+VIEW/i.test(upper)) {
+      return SqlParser.parseDropView(cleaned);
+    } else if (/^DROP\s+(?:PROCEDURE|PROC)/i.test(upper)) {
+      return SqlParser.parseDropProcedure(cleaned);
+    } else if (/^DROP\s+TABLE/i.test(upper)) {
+      return SqlParser.parseDropTable(cleaned);
+    } else if (/^(?:CALL|EXEC|EXECUTE)\s+/i.test(upper)) {
+      return SqlParser.parseCallProcedure(cleaned);
     } else if (upper.startsWith('INSERT')) {
       return SqlParser.parseInsert(cleaned);
     } else if (upper.startsWith('UPDATE')) {
@@ -61,23 +74,98 @@ export class SqlParser {
     return {
       ast: { type: 'UNKNOWN', rawQuery: sqlQuery, table: '', columns: [] },
       plan: [],
-      error: `Unsupported SQL command. Supported statements: SELECT, CREATE TABLE, INSERT, UPDATE, DELETE.`,
+      error: `Unsupported SQL command. Supported statements: SELECT, INSERT, UPDATE, DELETE, CREATE/DROP TABLE, CREATE/DROP VIEW, CREATE/DROP PROCEDURE, CALL/EXEC.`,
     };
   }
 
   /**
-   * Parses a multi-statement SQL DDL script.
+   * Splits a SQL script into individual statements while respecting single/double quotes,
+   * comments, and BEGIN ... END blocks in stored procedures.
+   */
+  public static splitScriptStatements(script: string): string[] {
+    const stmts: string[] = [];
+    let current = '';
+    let inSingleQuote = false;
+    let inDoubleQuote = false;
+    let inLineComment = false;
+    let inBlockComment = false;
+    let blockDepth = 0;
+
+    for (let i = 0; i < script.length; i++) {
+      const char = script[i];
+      const nextChar = script[i + 1] || '';
+
+      // Check comments
+      if (!inSingleQuote && !inDoubleQuote) {
+        if (!inLineComment && !inBlockComment && char === '-' && nextChar === '-') {
+          inLineComment = true;
+          i++;
+          continue;
+        }
+        if (inLineComment && (char === '\n' || char === '\r')) {
+          inLineComment = false;
+          continue;
+        }
+        if (!inLineComment && !inBlockComment && char === '/' && nextChar === '*') {
+          inBlockComment = true;
+          i++;
+          continue;
+        }
+        if (inBlockComment && char === '*' && nextChar === '/') {
+          inBlockComment = false;
+          i++;
+          continue;
+        }
+      }
+
+      if (inLineComment || inBlockComment) continue;
+
+      // Check quotes
+      if (char === "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+        current += char;
+        continue;
+      }
+      if (char === '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+        current += char;
+        continue;
+      }
+
+      // Check BEGIN ... END depth
+      if (!inSingleQuote && !inDoubleQuote) {
+        const remaining = script.slice(i);
+        if (/^BEGIN\b/i.test(remaining)) {
+          blockDepth++;
+        } else if (/^END\b/i.test(remaining)) {
+          blockDepth = Math.max(0, blockDepth - 1);
+        }
+
+        // Semicolon statement boundary
+        if (char === ';' && blockDepth === 0) {
+          const trimmed = current.trim();
+          if (trimmed) stmts.push(trimmed);
+          current = '';
+          continue;
+        }
+      }
+
+      current += char;
+    }
+
+    const trimmed = current.trim();
+    if (trimmed) stmts.push(trimmed);
+    return stmts;
+  }
+
+  /**
+   * Parses a multi-statement SQL script.
    */
   public static parseScript(script: string): {
     statements: { ast: SqlAst; plan: string[]; error?: string }[];
     hasErrors: boolean;
   } {
-    const rawStmts = script
-      .replace(/--.*$/gm, '')
-      .split(';')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
+    const rawStmts = SqlParser.splitScriptStatements(script);
     const statements = rawStmts.map((s) => SqlParser.parse(s));
     const hasErrors = statements.some((s) => !!s.error);
     return { statements, hasErrors };
@@ -611,6 +699,277 @@ export class SqlParser {
         ast: { type: 'DELETE', rawQuery: sql, table: '', columns: [] },
         plan: [],
         error: `Parse error in DELETE: ${e.message}`,
+      };
+    }
+  }
+
+  private static parseCreateView(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
+    try {
+      // CREATE [OR REPLACE] VIEW [IF NOT EXISTS] view_name [(col1, col2)] AS <query>
+      const match = sql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)(?:\s*\(([\s\S]+?)\))?\s+AS\s+([\s\S]+)$/i);
+      if (!match) {
+        return {
+          ast: { type: 'CREATE_VIEW', rawQuery: sql, table: '', columns: [] },
+          plan: [],
+          error: 'Syntax error in CREATE VIEW. Expected format: CREATE VIEW <name> [(<columns>)] AS SELECT ...',
+        };
+      }
+
+      const name = match[1].trim();
+      const colString = match[2];
+      const viewQuery = match[3].trim().replace(/;+$/, '');
+
+      const columns = colString
+        ? SqlParser.splitSqlArguments(colString).map((c) => c.trim().replace(/^[`"']|[`"']$/g, ''))
+        : [];
+
+      const innerParse = SqlParser.parseSelect(viewQuery);
+      if (innerParse.error) {
+        return {
+          ast: { type: 'CREATE_VIEW', rawQuery: sql, table: name, columns },
+          plan: [],
+          error: `Error in VIEW definition query: ${innerParse.error}`,
+        };
+      }
+
+      const plan = [
+        `1. Parse underlying SELECT query definition`,
+        `2. Validate referenced base tables and attributes`,
+        `3. Compute projected view schema attributes`,
+        `4. Register view '${name}' in database catalog (sys.views)`,
+      ];
+
+      return {
+        ast: {
+          type: 'CREATE_VIEW',
+          rawQuery: sql,
+          table: name,
+          columns: columns.length > 0 ? columns : innerParse.ast.columns,
+          createView: {
+            name,
+            query: viewQuery,
+            columns: columns.length > 0 ? columns : innerParse.ast.columns,
+          },
+        },
+        plan,
+      };
+    } catch (e: any) {
+      return {
+        ast: { type: 'CREATE_VIEW', rawQuery: sql, table: '', columns: [] },
+        plan: [],
+        error: `Parse error in CREATE VIEW: ${e.message}`,
+      };
+    }
+  }
+
+  private static parseDropView(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
+    try {
+      const match = sql.match(/DROP\s+VIEW\s+(?:IF\s+EXISTS\s+)?([a-zA-Z0-9_]+)/i);
+      if (!match) {
+        return {
+          ast: { type: 'DROP_VIEW', rawQuery: sql, table: '', columns: [] },
+          plan: [],
+          error: 'Syntax error in DROP VIEW. Expected format: DROP VIEW [IF EXISTS] <view_name>',
+        };
+      }
+
+      const name = match[1].trim();
+      const ifExists = /IF\s+EXISTS/i.test(sql);
+
+      return {
+        ast: {
+          type: 'DROP_VIEW',
+          rawQuery: sql,
+          table: name,
+          columns: [],
+          dropView: { name, ifExists },
+        },
+        plan: [`1. Check existence in catalog`, `2. Remove view definition for '${name}'`],
+      };
+    } catch (e: any) {
+      return {
+        ast: { type: 'DROP_VIEW', rawQuery: sql, table: '', columns: [] },
+        plan: [],
+        error: `Parse error in DROP VIEW: ${e.message}`,
+      };
+    }
+  }
+
+  private static parseCreateProcedure(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
+    try {
+      const match = sql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|PROC)\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)\s*(?:\(([\s\S]*?)\))?\s*(?:AS\s+)?(?:BEGIN\s+)?([\s\S]+?)(?:\s*END)?(?:\s*;)?$/i);
+      if (!match) {
+        return {
+          ast: { type: 'CREATE_PROCEDURE', rawQuery: sql, table: '', columns: [] },
+          plan: [],
+          error: 'Syntax error in CREATE PROCEDURE. Expected format: CREATE PROCEDURE <name>(<params>) BEGIN <body> END',
+        };
+      }
+
+      const name = match[1].trim();
+      const paramsRaw = match[2] ? match[2].trim() : '';
+      let body = match[3].trim();
+      body = body.replace(/\s*END\s*;?$/i, '').trim();
+
+      const parameters: StoredProcedureParameter[] = [];
+      if (paramsRaw) {
+        const paramList = SqlParser.splitSqlArguments(paramsRaw);
+        for (const p of paramList) {
+          const cleanP = p.trim();
+          if (!cleanP) continue;
+          const tokens = cleanP.replace(/^(?:IN|OUT|INOUT)\s+/i, '').split(/\s+/);
+          const pName = tokens[0].replace(/^[@]/, '').trim();
+          const pType = tokens.slice(1).join(' ') || 'VARCHAR';
+          parameters.push({ name: pName, type: pType });
+        }
+      }
+
+      const plan = [
+        `1. Parse procedure parameter signatures (${parameters.length} parameter(s))`,
+        `2. Compile and syntax-check procedure body routine`,
+        `3. Register stored procedure '${name}' into system catalog (sys.procedures)`,
+      ];
+
+      return {
+        ast: {
+          type: 'CREATE_PROCEDURE',
+          rawQuery: sql,
+          table: name,
+          columns: [],
+          createProcedure: {
+            name,
+            parameters,
+            body,
+          },
+        },
+        plan,
+      };
+    } catch (e: any) {
+      return {
+        ast: { type: 'CREATE_PROCEDURE', rawQuery: sql, table: '', columns: [] },
+        plan: [],
+        error: `Parse error in CREATE PROCEDURE: ${e.message}`,
+      };
+    }
+  }
+
+  private static parseDropProcedure(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
+    try {
+      const match = sql.match(/DROP\s+(?:PROCEDURE|PROC)\s+(?:IF\s+EXISTS\s+)?([a-zA-Z0-9_]+)/i);
+      if (!match) {
+        return {
+          ast: { type: 'DROP_PROCEDURE', rawQuery: sql, table: '', columns: [] },
+          plan: [],
+          error: 'Syntax error in DROP PROCEDURE. Expected format: DROP PROCEDURE [IF EXISTS] <proc_name>',
+        };
+      }
+
+      const name = match[1].trim();
+      const ifExists = /IF\s+EXISTS/i.test(sql);
+
+      return {
+        ast: {
+          type: 'DROP_PROCEDURE',
+          rawQuery: sql,
+          table: name,
+          columns: [],
+          dropProcedure: { name, ifExists },
+        },
+        plan: [`1. Check routine existence in catalog`, `2. Remove routine definition for '${name}'`],
+      };
+    } catch (e: any) {
+      return {
+        ast: { type: 'DROP_PROCEDURE', rawQuery: sql, table: '', columns: [] },
+        plan: [],
+        error: `Parse error in DROP PROCEDURE: ${e.message}`,
+      };
+    }
+  }
+
+  private static parseCallProcedure(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
+    try {
+      const match = sql.match(/^(?:CALL|EXEC|EXECUTE)\s+([a-zA-Z0-9_]+)(?:\s*\(([\s\S]*?)\)|\s+([\s\S]+))?$/i);
+      if (!match) {
+        return {
+          ast: { type: 'CALL_PROCEDURE', rawQuery: sql, table: '', columns: [] },
+          plan: [],
+          error: 'Syntax error in CALL/EXEC. Expected format: CALL <procedure_name>(<arguments>)',
+        };
+      }
+
+      const name = match[1].trim();
+      const argsRaw = (match[2] !== undefined ? match[2] : match[3]) || '';
+
+      const rawArgs = argsRaw.trim() ? SqlParser.splitSqlArguments(argsRaw.trim()) : [];
+      const parsedArgs = rawArgs.map((arg) => {
+        const trimmed = arg.trim();
+        if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+          return trimmed.slice(1, -1);
+        }
+        if (!isNaN(Number(trimmed)) && trimmed !== '') {
+          return Number(trimmed);
+        }
+        if (trimmed.toUpperCase() === 'NULL') return null;
+        if (trimmed.toUpperCase() === 'TRUE') return true;
+        if (trimmed.toUpperCase() === 'FALSE') return false;
+        return trimmed;
+      });
+
+      return {
+        ast: {
+          type: 'CALL_PROCEDURE',
+          rawQuery: sql,
+          table: name,
+          columns: [],
+          callProcedure: {
+            name,
+            arguments: parsedArgs,
+          },
+        },
+        plan: [
+          `1. Lookup procedure '${name}' in catalog`,
+          `2. Bind ${parsedArgs.length} argument(s) to parameter variables`,
+          `3. Execute procedure body routine statements`,
+        ],
+      };
+    } catch (e: any) {
+      return {
+        ast: { type: 'CALL_PROCEDURE', rawQuery: sql, table: '', columns: [] },
+        plan: [],
+        error: `Parse error in CALL/EXEC: ${e.message}`,
+      };
+    }
+  }
+
+  private static parseDropTable(sql: string): { ast: SqlAst; plan: string[]; error?: string } {
+    try {
+      const match = sql.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([a-zA-Z0-9_]+)/i);
+      if (!match) {
+        return {
+          ast: { type: 'DROP_TABLE', rawQuery: sql, table: '', columns: [] },
+          plan: [],
+          error: 'Syntax error in DROP TABLE. Expected format: DROP TABLE [IF EXISTS] <table_name>',
+        };
+      }
+
+      const name = SqlParser.normalizeTableName(match[1].trim());
+      const ifExists = /IF\s+EXISTS/i.test(sql);
+
+      return {
+        ast: {
+          type: 'DROP_TABLE',
+          rawQuery: sql,
+          table: name,
+          columns: [],
+          dropTable: { name, ifExists },
+        },
+        plan: [`1. Check table '${name}' in catalog`, `2. Drop data pages and unregister schema`],
+      };
+    } catch (e: any) {
+      return {
+        ast: { type: 'DROP_TABLE', rawQuery: sql, table: '', columns: [] },
+        plan: [],
+        error: `Parse error in DROP TABLE: ${e.message}`,
       };
     }
   }

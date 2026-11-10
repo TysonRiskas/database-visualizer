@@ -26,8 +26,8 @@ interface TopControlsBarProps {
   onRunSql: (sql: string) => void;
   onOpenHelp: () => void;
   isSimulating: boolean;
-  viewMode?: 'welcome' | 'engine_room' | 'database_builder' | 'database_editor';
-  onViewModeChange?: (mode: 'welcome' | 'engine_room' | 'database_builder' | 'database_editor') => void;
+  viewMode?: 'welcome' | 'engine_room' | 'database_builder' | 'database_editor' | 'sql_playground';
+  onViewModeChange?: (mode: 'welcome' | 'engine_room' | 'database_builder' | 'database_editor' | 'sql_playground') => void;
 }
 
 const SAMPLE_QUERIES = [
@@ -189,6 +189,17 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
                 <Database className="w-3.5 h-3.5 text-emerald-200" />
                 <span>🏗️ Build Database</span>
               </button>
+              <button
+                onClick={() => onViewModeChange('sql_playground')}
+                className={`px-3 py-1.5 rounded-xl font-bold text-xs transition flex items-center gap-1.5 ${
+                  viewMode === 'sql_playground'
+                    ? 'bg-[#275D38] text-white shadow-md'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+              >
+                <Code2 className="w-3.5 h-3.5 text-emerald-200" />
+                <span>💻 SQL Playground</span>
+              </button>
             </div>
           )}
 
@@ -273,6 +284,24 @@ export const TopControlsBar: React.FC<TopControlsBarProps> = ({
               <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs font-mono font-bold shadow-xs">
                 <Layers className="w-3.5 h-3.5 text-blue-600" />
                 <span>Builder Studio (Isolated Canvas)</span>
+              </div>
+
+              {/* Theory Guide */}
+              <button
+                onClick={onOpenHelp}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium border border-slate-300 transition"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-slate-500" />
+                <span>Theory</span>
+              </button>
+            </div>
+          )}
+
+          {viewMode === 'sql_playground' && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-sky-400 text-xs font-mono font-bold shadow-xs">
+                <Code2 className="w-3.5 h-3.5 text-sky-400" />
+                <span>VS Code SQL Studio (Views & Procedures)</span>
               </div>
 
               {/* Theory Guide */}

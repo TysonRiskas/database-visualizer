@@ -262,6 +262,42 @@ export interface QueryResult {
   queryPlanSteps?: string[];
 }
 
+export interface ViewDefinition {
+  name: string;
+  definitionQuery: string;
+  columns: string[];
+  createdAt: string;
+}
+
+export interface StoredProcedureParameter {
+  name: string;
+  type: string;
+}
+
+export interface StoredProcedureDefinition {
+  name: string;
+  parameters: StoredProcedureParameter[];
+  body: string;
+  createdAt: string;
+}
+
+export interface QueryHistoryItem {
+  id: string;
+  sql: string;
+  timestamp: string;
+  durationMs: number;
+  success: boolean;
+  rowsAffected?: number;
+  error?: string;
+}
+
+export interface PlaygroundState {
+  databaseState: DatabaseState;
+  views: Record<string, ViewDefinition>;
+  procedures: Record<string, StoredProcedureDefinition>;
+  queryHistory: QueryHistoryItem[];
+}
+
 export interface JoinClause {
   type: 'INNER' | 'LEFT' | 'RIGHT';
   targetTable: string;
@@ -270,7 +306,20 @@ export interface JoinClause {
 }
 
 export interface SqlAst {
-  type: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'CREATE_TABLE' | 'BATCH_DDL' | 'UNKNOWN';
+  type:
+    | 'SELECT'
+    | 'INSERT'
+    | 'UPDATE'
+    | 'DELETE'
+    | 'CREATE_TABLE'
+    | 'DROP_TABLE'
+    | 'CREATE_VIEW'
+    | 'DROP_VIEW'
+    | 'CREATE_PROCEDURE'
+    | 'DROP_PROCEDURE'
+    | 'CALL_PROCEDURE'
+    | 'BATCH_DDL'
+    | 'UNKNOWN';
   rawQuery: string;
   table: string;
   columns: string[];
@@ -313,4 +362,30 @@ export interface SqlAst {
     }[];
     seedRows?: RowData[];
   }[];
+  createView?: {
+    name: string;
+    query: string;
+    columns?: string[];
+  };
+  dropView?: {
+    name: string;
+    ifExists?: boolean;
+  };
+  createProcedure?: {
+    name: string;
+    parameters: StoredProcedureParameter[];
+    body: string;
+  };
+  dropProcedure?: {
+    name: string;
+    ifExists?: boolean;
+  };
+  callProcedure?: {
+    name: string;
+    arguments: any[];
+  };
+  dropTable?: {
+    name: string;
+    ifExists?: boolean;
+  };
 }
